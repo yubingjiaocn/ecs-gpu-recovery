@@ -27,7 +27,7 @@ class EcsGpuRecoveryStack(Stack):
             table_name="ecs_container_instance"
         )
 
-        # Create DynamoDB table for original hybrid-GPU-training-job
+        # Create DynamoDB table for job tracking
         training_job_table = dynamodb.Table(
             self, "HybridGpuTrainingJobTable",
             partition_key=dynamodb.Attribute(
@@ -35,18 +35,7 @@ class EcsGpuRecoveryStack(Stack):
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="hybrid-gpu-training-job"
-        )
-
-        # Create DynamoDB table for ECS job submissions
-        ecs_job_sub_table = dynamodb.Table(
-            self, "EcsJobSubmissionTable",
-            partition_key=dynamodb.Attribute(
-                name="job_id_rank",
-                type=dynamodb.AttributeType.STRING
-            ),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="test-ecs-job-sub-01"
+            table_name="ecs-job-sub"
         )
 
         # Lambda function for ECS task handling
@@ -59,9 +48,8 @@ class EcsGpuRecoveryStack(Stack):
             memory_size=256,
             environment={
                 "TRAINING_JOB_TABLE_NAME": training_job_table.table_name,
-                "ECS_JOB_SUB_TABLE_NAME": ecs_job_sub_table.table_name,
                 "ECS_CLUSTER_NAME": "nwcd-gpu-testing",  # Updated ECS cluster name
-                "DCGM_HEALTH_CHECK_TASK": "gpu-dcgm-health-check"
+                "DCGM_HEALTH_CHECK_TASK": "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:1"
             },
             description="Lambda function to manage ECS GPU training tasks"
         )
@@ -76,7 +64,6 @@ class EcsGpuRecoveryStack(Stack):
             memory_size=256,
             environment={
                 "TRAINING_JOB_TABLE_NAME": training_job_table.table_name,
-                "ECS_JOB_SUB_TABLE_NAME": ecs_job_sub_table.table_name,
                 "CONTAINER_INSTANCE_TABLE_NAME": container_instance_table.table_name,
                 "ECS_CLUSTER_NAME": "nwcd-gpu-testing"
             },
@@ -85,9 +72,7 @@ class EcsGpuRecoveryStack(Stack):
 
         # Grant Lambda permissions to access DynamoDB tables
         training_job_table.grant_read_write_data(ecs_task_handler)
-        ecs_job_sub_table.grant_read_write_data(ecs_task_handler)
         training_job_table.grant_read_write_data(dcgm_task_monitor)
-        ecs_job_sub_table.grant_read_write_data(dcgm_task_monitor)
         container_instance_table.grant_read_write_data(dcgm_task_monitor)
 
         # Grant Lambda permissions to access ECS and SSM
@@ -152,7 +137,6 @@ class EcsGpuRecoveryStack(Stack):
             memory_size=256,
             environment={
                 "TRAINING_JOB_TABLE_NAME": training_job_table.table_name,
-                "ECS_JOB_SUB_TABLE_NAME": ecs_job_sub_table.table_name,
                 "ECS_CLUSTER_NAME": "nwcd-gpu-testing",
                 "SNS_TOPIC_ARN": notification_topic.topic_arn
             },
@@ -161,7 +145,6 @@ class EcsGpuRecoveryStack(Stack):
 
         # Grant Lambda 3 permissions
         training_job_table.grant_read_write_data(ecs_instance_monitor)
-        ecs_job_sub_table.grant_read_write_data(ecs_instance_monitor)
         notification_topic.grant_publish(ecs_instance_monitor)
 
         ecs_instance_monitor.add_to_role_policy(
@@ -183,9 +166,10 @@ class EcsGpuRecoveryStack(Stack):
                 detail_type=["ECS Task State Change"],
                 detail={
                     "taskDefinitionArn": [{
-                        "anything-but": {
-                            f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/dcgm-*"
-                        }
+                        "anything-but": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/dcgm-*"
+                    }],
+                    "clusterArn": [{
+                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/nwcd-gpu-testing"
                     }]
                 }
             ),
@@ -209,6 +193,9 @@ class EcsGpuRecoveryStack(Stack):
                 detail={
                     "taskDefinitionArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/gpu-dcgm-health-check"
+                    }],
+                    "clusterArn": [{
+                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/nwcd-gpu-testing"
                     }]
                 }
             ),
@@ -228,7 +215,12 @@ class EcsGpuRecoveryStack(Stack):
             self, "EcsInstanceEventRule",
             event_pattern=events.EventPattern(
                 source=["aws.ecs"],
-                detail_type=["ECS Container Instance State Change"]
+                detail_type=["ECS Container Instance State Change"],
+                detail={
+                    "clusterArn": [{
+                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/nwcd-gpu-testing"
+                    }]
+                }
             ),
             description="Rule to capture ECS Container Instance State Change events"
         )

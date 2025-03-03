@@ -13,15 +13,6 @@ ecs_client = boto3.client('ecs')
 sns_client = boto3.client('sns')
 dynamodb = boto3.resource('dynamodb')
 
-def get_environment_variables():
-    """
-    Get environment variables needed for the Lambda function.
-    """
-    return {
-        'training_job_table_name': os.environ.get('TRAINING_JOB_TABLE_NAME'),
-        'sns_topic_arn': os.environ.get('SNS_TOPIC_ARN')
-    }
-
 def validate_ecs_container_instance_event(event):
     """
     Validates that the event is an ECS Container Instance State Change event.
@@ -44,10 +35,10 @@ def validate_ecs_container_instance_event(event):
 
 def get_jobs_by_instance_id(instance_id, table_name):
     """
-    Query jobs associated with an EC2 instance ID.
+    Query jobs associated with a container instance ID.
 
     Args:
-        instance_id (str): EC2 instance ID
+        instance_id (str): Container instance ID
         table_name (str): DynamoDB table name
 
     Returns:
@@ -56,7 +47,7 @@ def get_jobs_by_instance_id(instance_id, table_name):
     try:
         table = dynamodb.Table(table_name)
         response = table.scan(
-            FilterExpression=Attr('ec2_instance_id').eq(instance_id)
+            FilterExpression=Attr('container_inst_id').eq(instance_id)
         )
 
         return response.get('Items', [])
@@ -89,52 +80,42 @@ def update_job_status(table_name, job_id_rank, status):
         logger.error(f"Error updating job status: {str(e)}")
         return False
 
-def run_training_task(cluster_name, task_definition, container_instance_arn, job_id, task_info):
+def run_training_task(cluster_name, task_info):
     """
     Re-execute a training task on a container instance.
 
     Args:
         cluster_name (str): ECS cluster name
-        task_definition (str): Task definition ARN or name
-        container_instance_arn (str): Container instance ARN
-        job_id (str): Job ID
-        task_info (dict): Task information
+        task_info (dict): Task information from original task definition
 
     Returns:
         dict: Response from run_task API
     """
     try:
-        # Prepare tags for the task
-        tags = [
-            {
-                'key': 'job_id',
-                'value': job_id
-            }
-        ]
-
-        # Add any additional tags from the original task
-        if task_info.get('tags'):
-            for tag in task_info.get('tags', []):
-                if tag['key'] != 'job_id':  # Avoid duplicate job_id tag
-                    tags.append(tag)
+        task_definition = task_info['taskDefinitionArn']
+        container_instance_arn = task_info['containerInstanceArn']
+        tags = task_info.get('tags', [])
+        overrides = task_info.get('overrides', {})
 
         # Run the task on the specified container instance
-        response = ecs_client.run_task(
+        response = ecs_client.start_task(
             cluster=cluster_name,
             taskDefinition=task_definition,
             count=1,
             startedBy='ecs-instance-monitor-lambda',
             containerInstances=[container_instance_arn],
-            tags=tags
+            tags=tags,
+            overrides=overrides
         )
 
         logger.info(f"Started training task: {response}")
+
         return response
     except Exception as e:
         logger.error(f"Error running training task: {str(e)}")
         return None
 
-def update_job_run_time(table_name, job_id_rank, run_time):
+def update_job_run_time(table_name, job_id_rank, run_time, new_task_id):
     """
     Update the run_time of a job in DynamoDB.
 
@@ -142,6 +123,7 @@ def update_job_run_time(table_name, job_id_rank, run_time):
         table_name (str): DynamoDB table name
         job_id_rank (str): Job ID rank (primary key)
         run_time (int): New run_time value
+        new_task_id (str): New ECS Task ID
 
     Returns:
         bool: True if successful, False otherwise
@@ -150,10 +132,13 @@ def update_job_run_time(table_name, job_id_rank, run_time):
         table = dynamodb.Table(table_name)
         table.update_item(
             Key={'job_id_rank': job_id_rank},
-            UpdateExpression='SET run_time = :val',
-            ExpressionAttributeValues={':val': str(run_time)}
+            UpdateExpression='SET run_time = :rt, ecs_task_id = :tid',
+            ExpressionAttributeValues={
+                ':rt': str(run_time),
+                ':tid': new_task_id
+            }
         )
-        logger.info(f"Updated job {job_id_rank} run_time to {run_time}")
+        logger.info(f"Updated job {job_id_rank} run_time to {run_time} and task ID to {new_task_id}")
         return True
     except Exception as e:
         logger.error(f"Error updating job run_time: {str(e)}")
@@ -198,7 +183,9 @@ def lambda_handler(event, context):
     logger.info('Event received: %s', json.dumps(event))
 
     # Get environment variables
-    env_vars = get_environment_variables()
+    training_job_table_name = os.environ.get('TRAINING_JOB_TABLE_NAME'),
+    sns_topic_arn = os.environ.get('SNS_TOPIC_ARN')
+    ecs_cluster_name = os.environ.get('ECS_CLUSTER_NAME')
 
     # Validate event
     if not validate_ecs_container_instance_event(event):
@@ -208,13 +195,14 @@ def lambda_handler(event, context):
         }
 
     detail = event["detail"]
-    instance_id = detail.get('ec2InstanceId')
+    instance_id = detail.get('containerInstanceArn')
+    instance_id = instance_id.split('/')[-1]
 
     if not instance_id:
-        logger.error("No EC2 instance ID in event")
+        logger.error("No instance ID in event")
         return {
             'statusCode': 400,
-            'body': 'No EC2 instance ID in event'
+            'body': 'No instance ID in event'
         }
 
     # Check if this is an instance starting up (ACTIVE status)
@@ -228,7 +216,7 @@ def lambda_handler(event, context):
     logger.info(f"Processing restarted instance {instance_id}")
 
     # Query training jobs associated with this instance
-    jobs = get_jobs_by_instance_id(instance_id, env_vars['training_job_table_name'])
+    jobs = get_jobs_by_instance_id(instance_id, training_job_table_name)
 
     if not jobs:
         logger.info(f"No jobs found for instance {instance_id}")
@@ -244,55 +232,47 @@ def lambda_handler(event, context):
         job_id = job.get('job_id')
         job_id_rank = job.get('job_id_rank')
         job_status = job.get('job_status')
-        run_time = job.get('run_time', '0')
+        run_time = job.get('run_time', 0)
 
         logger.info(f"Processing job: {job_id}, status: {job_status}, run_time: {run_time}")
 
-        # Skip if job status is 'stop'
-        if job_status == 'stop':
-            logger.info(f"Job {job_id} status is 'stop', skipping")
+        # Skip if job status is 'FAILED'
+        if job_status == 'FAILED':
+            logger.info(f"Job {job_id} status is 'FAILED', skipping")
             continue
 
         # Check run_time
-        if run_time == '1':
+        if run_time == 1:
             # Re-execute training task and update run_time to 2
             logger.info(f"Job {job_id} run_time is 1, re-executing training task")
 
-            # Get task definition and container instance ARN
-            task_definition = job.get('task_definition')
-            container_instance_arn = detail.get('containerInstanceArn')
-            cluster_name = detail.get('clusterArn').split('/')[-1]
-
-            # Get more information about the existing task
-            task_info = {
-                'job_id': job_id,
-                'tags': job.get('tags', [])
-            }
+            original_task_id = job.get('ecs_task_id')
+            original_task_info = ecs_client.DescribeTasks(
+                cluster=detail.get('clusterArn').split('/')[-1],
+                tasks=[original_task_id]
+            )['tasks'][0]
 
             # Run the training task
             response = run_training_task(
-                cluster_name,
-                task_definition,
-                container_instance_arn,
-                job_id,
-                task_info
+                ecs_cluster_name,
+                original_task_info
             )
 
             if response:
                 # Update run_time to 2
-                update_job_run_time(env_vars['training_job_table_name'], job_id_rank, 2)
+                new_task_id = response['tasks'][0]["taskArn"].split('/')[-1]
+                update_job_run_time(training_job_table_name, job_id_rank, 2, new_task_id)
                 processed_jobs += 1
         else:
             # Update job status to 'fail' and notify technical staff
             logger.info(f"Job {job_id} run_time is not 1, updating status to 'fail'")
-            update_job_status(env_vars['training_job_table_name'], job_id_rank, 'fail')
+            update_job_status(training_job_table_name, job_id_rank, 'fail')
 
             # Send notification to technical staff
-            if env_vars.get('sns_topic_arn'):
-                subject = f"Job {job_id} failed after instance restart"
-                message = (f"Job {job_id} on instance {instance_id} failed after restart. "
-                          f"The job has been marked as failed. Please investigate.")
-                send_notification(env_vars['sns_topic_arn'], subject, message)
+            subject = f"Job {job_id} failed after instance restart"
+            message = (f"Job {job_id} on instance {instance_id} failed after restart. "
+                        f"The job has been marked as failed. Please investigate.")
+            send_notification(sns_topic_arn, subject, message)
 
             processed_jobs += 1
 

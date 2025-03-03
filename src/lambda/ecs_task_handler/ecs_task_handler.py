@@ -207,7 +207,7 @@ def handle_task_exit_code_1(task_id, cluster_arn, cluster_name, table, env_vars)
             )
 
         # Update status to 'stop' for all records with this job ID
-        update_job_status(table, job_records, 'stop')
+        update_job_status(table, job_records, 'STOPPED')
 
 def handle_task_exit_code_0(task_id, table):
     """
@@ -258,7 +258,7 @@ def handle_task_state_change(detail, env_vars):
     )
 
     # Get DynamoDB table
-    table = dynamodb.Table(env_vars['training_job_table_name'])
+    table = dynamodb.Table(env_vars['TRAINING_JOB_TABLE_NAME'])
 
     stop_code = task_detail.get('stopCode')
 

@@ -82,7 +82,7 @@ flowchart TD
         CheckJobRunTime -->|Yes| RestartTask[Restart Training Task]
         CheckJobRunTime -->|No| SendNotif[Send SNS Notification]
     end
-</mermaid>
+```
 
 ## Setup and Deployment
 
