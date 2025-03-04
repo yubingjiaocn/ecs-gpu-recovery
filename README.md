@@ -20,28 +20,33 @@ The ECS GPU Recovery system consists of the following components:
    - Detects task failures (exit code 1)
    - Stops other tasks belonging to the same job
    - Triggers DCGM (NVIDIA Data Center GPU Manager) health check tasks
+   - Updates job status to 'STOPPED' when failures are detected
 
 2. **DCGM Task Monitor** (`dcgm_task_monitor.py`)
    - Monitors completion of DCGM health check tasks
    - Analyzes DCGM results to determine GPU health
    - Initiates instance reboot when necessary
    - Updates job and container instance status in DynamoDB
+   - Handles different exit codes from DCGM tasks
 
 3. **ECS Instance Monitor** (`ecs_instance_monitor.py`)
    - Monitors ECS container instance state changes
    - Detects instances returning to service after reboot
    - Re-executes training tasks on recovered instances
-   - Sends notifications when recovery fails
+   - Sends notifications via SNS when recovery fails
+   - Tracks run attempts to prevent infinite recovery loops
 
 ### DynamoDB Tables
 
-1. **hybrid-gpu-training-job**
+1. **ecs-job-sub**
    - Tracks GPU training job status
    - Stores metadata about jobs, tasks, and recovery attempts
+   - Uses job_id_rank as the primary key
 
 2. **ecs_container_instance**
    - Tracks ECS container instance status
    - Records reboots and recovery operations
+   - Uses container_inst_id as the primary key
 
 ### Event Flow
 
@@ -55,7 +60,9 @@ flowchart TD
         StopTasks --> RunDCGM[Run DCGM Health Check]
         CheckExit -->|No| CheckExit0{Exit Code = 0?}
         CheckExit0 -->|Yes| UpdateComplete[Update Job Status to Complete]
-        CheckExit0 -->|No| NoAction1[No Action]
+        CheckExit0 -->|No| CheckUserStopped{User Stopped?}
+        CheckUserStopped -->|Yes| MarkOther[Mark Job as Other]
+        CheckUserStopped -->|No| NoAction1[No Action]
     end
 
     RunDCGM --> DCGMEvent[DCGM Task Completion Event]
@@ -64,10 +71,10 @@ flowchart TD
 
     subgraph "GPU Health Analysis"
         DCGMMonitor --> CheckDCGM{DCGM Exit Code}
-        CheckDCGM -->|0| MarkFailed[Mark Job as Failed]
+        CheckDCGM -->|0| MarkFailed[Mark Job as FAILED]
         CheckDCGM -->|1| CheckRunTime{Run Time = 1?}
         CheckRunTime -->|Yes| RebootInstance[Reboot Instance]
-        CheckRunTime -->|No| MarkJobFailed[Mark Job as Failed]
+        CheckRunTime -->|No| MarkJobFailed[Mark Job as FAILED]
     end
 
     RebootInstance --> InstanceEvent[Instance State Change Event]
@@ -92,7 +99,7 @@ This project is built using the AWS Cloud Development Kit (CDK) with Python.
 
 - AWS CLI configured with appropriate permissions
 - Python 3.13 or later
-- AWS CDK toolkit installed
+- AWS CDK toolkit installed (v2.180.0 or later)
 
 ### Setup Virtual Environment
 
@@ -120,11 +127,11 @@ cdk deploy
 
 ## Key Environment Variables
 
-- `TRAINING_JOB_TABLE_NAME`: DynamoDB table for tracking training jobs
-- `CONTAINER_INSTANCE_TABLE_NAME`: DynamoDB table for tracking container instances
-- `ECS_CLUSTER_NAME`: Name of the ECS cluster running GPU tasks
-- `DCGM_HEALTH_CHECK_TASK`: Task definition name for the DCGM health check
-- `SNS_TOPIC_ARN`: ARN of the SNS topic for notifications
+- `TRAINING_JOB_TABLE_NAME`: DynamoDB table for tracking training jobs (ecs-job-sub)
+- `CONTAINER_INSTANCE_TABLE_NAME`: DynamoDB table for tracking container instances (ecs_container_instance)
+- `ECS_CLUSTER_NAME`: Name of the ECS cluster running GPU tasks (nwcd-gpu-testing)
+- `DCGM_HEALTH_CHECK_TASK`: Task definition ARN for the DCGM health check
+- `SNS_TOPIC_ARN`: ARN of the SNS topic for notifications (gpu-training-notifications)
 
 ## Other Useful Commands
 
