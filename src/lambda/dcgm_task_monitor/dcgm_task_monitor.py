@@ -168,18 +168,29 @@ def handle_exit_code_1(detail, cluster_arn, job_dynamodb_data):
     Returns:
         tuple: (success, error_message)
     """
-    # Check run_time to determine if reboot is needed
-    run_time = job_dynamodb_data['Items'][0].get('run_time')
-    logger.info(f"DCGM task exit code 1, run_time: {run_time}")
+    # Check retry to determine if reboot is needed
+    retry = job_dynamodb_data['Items'][0].get('retry')
+    logger.info(f"DCGM task exit code 1, retry: {retry}")
 
-    if run_time and int(run_time) == 1:
+    if retry and int(retry) == 0:
         # Reboot the instance using SSM
-        logger.info("run_time is 1, initiating instance reboot")
+        logger.info("retry is 0, initiating instance reboot")
 
         # Get instance ID from container instance
         instance_id = get_instance_id(cluster_arn, detail['containerInstanceArn'])
         if not instance_id:
             return False, "Failed to get container instance details"
+
+        ecs_client.put_attributes(
+            cluster=cluster_arn,
+            attributes=[
+                {
+                    'name': 'status',
+                    'value': 'REBOOTING'
+                }
+            ],
+            targetId=detail['containerInstanceArn']
+        )
 
         # Send reboot command
         ssm_response = reboot_instance(instance_id)

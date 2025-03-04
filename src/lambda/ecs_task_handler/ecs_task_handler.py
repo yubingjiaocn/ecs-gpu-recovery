@@ -133,6 +133,18 @@ def run_dcgm_health_check(cluster_arn, container_instance_arn, job_id, dcgm_task
     try:
         # Run DCGM health check task
         logger.info(f"Running DCGM health check task on {container_instance_arn}")
+
+        ecs_client.put_attributes(
+            cluster=cluster_arn,
+            attributes=[
+                {
+                    'name': 'status',
+                    'value': 'PENDING_HEALTHCHECK'
+                }
+            ],
+            targetId=container_instance_arn
+        )
+
         dcgm_response = ecs_client.start_task(
             cluster=cluster_arn,
             taskDefinition=dcgm_task_def,

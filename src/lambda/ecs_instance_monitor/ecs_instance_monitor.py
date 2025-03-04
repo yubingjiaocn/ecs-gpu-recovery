@@ -114,14 +114,14 @@ def run_training_task(cluster_name, task_info):
         logger.error(f"Error running training task: {str(e)}")
         return None
 
-def update_job_run_time(table_name, job_id_rank, run_time, new_task_id):
+def update_job_retry(table_name, job_id_rank, retry, new_task_id):
     """
-    Update the run_time of a job in DynamoDB.
+    Update the retry of a job in DynamoDB.
 
     Args:
         table_name (str): DynamoDB table name
         job_id_rank (str): Job ID rank (primary key)
-        run_time (int): New run_time value
+        retry (int): New retry value
         new_task_id (str): New ECS Task ID
 
     Returns:
@@ -131,20 +131,20 @@ def update_job_run_time(table_name, job_id_rank, run_time, new_task_id):
         table = dynamodb.Table(table_name)
         table.update_item(
             Key={'job_id_rank': job_id_rank},
-            UpdateExpression='SET run_time = :rt, ecs_task_id = :tid, #s = :s',
+            UpdateExpression='SET retry = :rt, ecs_task_id = :tid, #s = :s',
             ExpressionAttributeNames={
                 '#s': 'status'
             },
             ExpressionAttributeValues={
-                ':rt': str(run_time),
+                ':rt': str(retry),
                 ':tid': new_task_id,
                 ':s': 'RUNNING'
             }
         )
-        logger.info(f"Updated job {job_id_rank} run_time to {run_time} and task ID to {new_task_id}")
+        logger.info(f"Updated job {job_id_rank} retry to {retry} and task ID to {new_task_id}")
         return True
     except Exception as e:
-        logger.error(f"Error updating job run_time: {str(e)}")
+        logger.error(f"Error updating job retry: {str(e)}")
         return False
 
 def send_notification(sns_topic_arn, subject, message):
@@ -218,6 +218,17 @@ def lambda_handler(event, context):
 
     logger.info(f"Processing restarted instance {instance_id}")
 
+    ecs_client.put_attributes(
+        cluster=ecs_cluster_name,
+        attributes=[
+            {
+                'name': 'status',
+                'value': 'AVAILABLE'
+            }
+        ],
+        targetId=detail['containerInstanceArn']
+    )
+
     # Query training jobs associated with this instance
     jobs = get_jobs_by_instance_id(instance_id, training_job_table_name)
 
@@ -235,19 +246,19 @@ def lambda_handler(event, context):
         job_id = job.get('job_id')
         job_id_rank = job.get('job_id_rank')
         job_status = job.get('job_status')
-        run_time = job.get('run_time', 0)
+        retry = job.get('retry', 0)
 
-        logger.info(f"Processing job: {job_id}, status: {job_status}, run_time: {run_time}")
+        logger.info(f"Processing job: {job_id}, status: {job_status}, retry: {retry}")
 
         # Skip if job status is 'FAILED'
         if job_status == 'FAILED':
             logger.info(f"Job {job_id} status is 'FAILED', skipping")
             continue
 
-        # Check run_time
-        if run_time == 1:
-            # Re-execute training task and update run_time to 2
-            logger.info(f"Job {job_id} run_time is 1, re-executing training task")
+        # Check retry
+        if retry == 1:
+            # Re-execute training task and update retry to 2
+            logger.info(f"Job {job_id} retry is 1, re-executing training task")
 
             original_task_id = job.get('ecs_task_id')
             original_task_info = ecs_client.describe_tasks(
@@ -262,13 +273,13 @@ def lambda_handler(event, context):
             )
 
             if response:
-                # Update run_time to 2
+                # Update retry to 1
                 new_task_id = response['tasks'][0]["taskArn"].split('/')[-1]
-                update_job_run_time(training_job_table_name, job_id_rank, 2, new_task_id)
+                update_job_retry(training_job_table_name, job_id_rank, 1, new_task_id)
                 processed_jobs += 1
         else:
             # Update job status to 'fail' and notify technical staff
-            logger.info(f"Job {job_id} run_time is not 1, updating status to 'fail'")
+            logger.info(f"Job {job_id} retry is not 1, updating status to 'fail'")
             update_job_status(training_job_table_name, job_id_rank, 'fail')
 
             # Send notification to technical staff
