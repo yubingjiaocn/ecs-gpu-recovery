@@ -89,8 +89,11 @@ def update_job_status(table, job_records, status):
             if job_id_rank:
                 table.update_item(
                     Key={'job_id_rank': job_id_rank},
-                    UpdateExpression='SET status = :status',
-                    ExpressionAttributeValues={':status': status}
+                    UpdateExpression='SET #s = :val',
+                    ExpressionAttributeNames={
+                        '#s': 'status'
+                    },
+                    ExpressionAttributeValues={':val': status}
                 )
                 logger.info(f"Updated job_id_rank {job_id_rank} status to {status}")
     except Exception as e:
@@ -255,10 +258,10 @@ def handle_task_state_change(detail, env_vars):
     task_detail = ecs_client.describe_tasks(
         cluster=cluster_name,
         tasks=[task_id]
-    )
+    )["tasks"][0]
 
     # Get DynamoDB table
-    table = dynamodb.Table(env_vars['TRAINING_JOB_TABLE_NAME'])
+    table = dynamodb.Table(env_vars['training_job_table_name'])
 
     stop_code = task_detail.get('stopCode')
 

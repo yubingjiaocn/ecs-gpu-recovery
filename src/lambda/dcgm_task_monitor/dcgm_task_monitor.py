@@ -107,7 +107,7 @@ def get_instance_id(cluster_arn, container_instance_arn):
     Returns:
         str: The instance ID if found, None otherwise
     """
-    instance_id = ecs_client.describeContainerInstances(
+    instance_id = ecs_client.describe_container_instances(
         cluster=cluster_arn,
         containerInstances=[container_instance_arn]
     )['containerInstances'][0]['ec2InstanceId']
@@ -149,7 +149,10 @@ def update_container_instance(container_instance_arn):
     container_inst_table = dynamodb.Table(container_inst_table_name)
     response = container_inst_table.update_item(
         Key={'container_inst_id': container_inst_id},
-        UpdateExpression='SET status = :val',
+        UpdateExpression='SET #s = :val',
+        ExpressionAttributeNames={
+            '#s': 'status'
+        },
         ExpressionAttributeValues={
             ':val': 'REBOOTED'
         },
@@ -230,7 +233,7 @@ def lambda_handler(event, context):
     task_detail = ecs_client.describe_tasks(
         cluster=cluster_name,
         tasks=[task_id]
-    )
+    )["tasks"][0]
 
     logger.info(f"Processing stopped task {task_id} in cluster {cluster_name}")
 
@@ -251,25 +254,32 @@ def lambda_handler(event, context):
         }
 
     # Process containers based on exit code
-    containers = task_detail.get('containers', [])
-    for container in containers:
-        exit_code = container.get('exitCode')
-        logger.info(f"Container {container.get('name')} exit code: {exit_code}")
+    exit_code = None
+    containers = task_detail.get('containers', None)
+    if containers is None:
+        return {
+            'statusCode': 500,
+            'body': 'No containers found in task detail'
+        }
+    else:
+        for container in containers:
+            exit_code = container.get('exitCode')
+            logger.info(f"Container {container.get('name')} exit code: {exit_code}")
 
-        if exit_code == 0:
-            # Task exited with code 0, update job status to failed
-            handle_exit_code_0(table, job_dynamodb_data)
+            if exit_code == 0:
+                # Task exited with code 0, update job status to failed
+                handle_exit_code_0(table, job_dynamodb_data)
 
-        elif exit_code == 1:
-            # Task exited with code 1, check if reboot needed
-            success, error_message = handle_exit_code_1(detail, cluster_arn, job_dynamodb_data)
-            if not success:
-                return {
-                    'statusCode': 500,
-                    'body': error_message
-                }
+            elif exit_code == 1:
+                # Task exited with code 1, check if reboot needed
+                success, error_message = handle_exit_code_1(detail, cluster_arn, job_dynamodb_data)
+                if not success:
+                    return {
+                        'statusCode': 500,
+                        'body': error_message
+                    }
 
-    return {
-        'statusCode': 200,
-        'body': 'Processing complete'
-    }
+        return {
+            'statusCode': 200,
+            'body': 'Processing complete'
+        }

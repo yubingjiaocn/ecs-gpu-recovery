@@ -6,7 +6,8 @@ from aws_cdk import (
     aws_iam as iam,
     aws_events as events,
     aws_events_targets as targets,
-    aws_sns as sns
+    aws_sns as sns,
+    aws_ecs as ecs
 )
 from constructs import Construct
 import os
@@ -83,7 +84,10 @@ class EcsGpuRecoveryStack(Stack):
                     "ecs:DescribeContainerInstances",
                     "ecs:StopTask",
                     "ecs:RunTask",
-                    "ecs:ListTasks"
+                    "ecs:ListTasks",
+                    "ecs:StartTask",
+                    "ecs:DescribeTaskDefinition",
+                    "ecs:TagResource"
                 ],
                 resources=["*"]
             )
@@ -152,7 +156,10 @@ class EcsGpuRecoveryStack(Stack):
                 actions=[
                     "ecs:DescribeContainerInstances",
                     "ecs:RunTask",
-                    "ecs:ListTasks"
+                    "ecs:ListTasks",
+                    "ecs:StartTask",
+                    "ecs:DescribeTasks",
+                    "ecs:DescribeTaskDefinition"
                 ],
                 resources=["*"]
             )

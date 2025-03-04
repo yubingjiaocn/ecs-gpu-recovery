@@ -101,7 +101,6 @@ def run_training_task(cluster_name, task_info):
         response = ecs_client.start_task(
             cluster=cluster_name,
             taskDefinition=task_definition,
-            count=1,
             startedBy='ecs-instance-monitor-lambda',
             containerInstances=[container_instance_arn],
             tags=tags,
@@ -132,10 +131,14 @@ def update_job_run_time(table_name, job_id_rank, run_time, new_task_id):
         table = dynamodb.Table(table_name)
         table.update_item(
             Key={'job_id_rank': job_id_rank},
-            UpdateExpression='SET run_time = :rt, ecs_task_id = :tid',
+            UpdateExpression='SET run_time = :rt, ecs_task_id = :tid, #s = :s',
+            ExpressionAttributeNames={
+                '#s': 'status'
+            },
             ExpressionAttributeValues={
                 ':rt': str(run_time),
-                ':tid': new_task_id
+                ':tid': new_task_id,
+                ':s': 'RUNNING'
             }
         )
         logger.info(f"Updated job {job_id_rank} run_time to {run_time} and task ID to {new_task_id}")
@@ -183,7 +186,7 @@ def lambda_handler(event, context):
     logger.info('Event received: %s', json.dumps(event))
 
     # Get environment variables
-    training_job_table_name = os.environ.get('TRAINING_JOB_TABLE_NAME'),
+    training_job_table_name = os.environ.get('TRAINING_JOB_TABLE_NAME')
     sns_topic_arn = os.environ.get('SNS_TOPIC_ARN')
     ecs_cluster_name = os.environ.get('ECS_CLUSTER_NAME')
 
@@ -247,7 +250,7 @@ def lambda_handler(event, context):
             logger.info(f"Job {job_id} run_time is 1, re-executing training task")
 
             original_task_id = job.get('ecs_task_id')
-            original_task_info = ecs_client.DescribeTasks(
+            original_task_info = ecs_client.describe_tasks(
                 cluster=detail.get('clusterArn').split('/')[-1],
                 tasks=[original_task_id]
             )['tasks'][0]
