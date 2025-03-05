@@ -256,9 +256,9 @@ def lambda_handler(event, context):
             continue
 
         # Check retry
-        if retry == 1:
-            # Re-execute training task and update retry to 2
-            logger.info(f"Job {job_id} retry is 1, re-executing training task")
+        if retry == 0:
+            # Re-execute training task and update retry to 1
+            logger.info(f"Job {job_id} retry is 0, re-executing training task")
 
             original_task_id = job.get('ecs_task_id')
             original_task_info = ecs_client.describe_tasks(
