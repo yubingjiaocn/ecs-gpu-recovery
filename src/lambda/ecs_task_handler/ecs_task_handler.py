@@ -3,57 +3,75 @@ import boto3
 import os
 import logging
 from boto3.dynamodb.conditions import Attr
+from functools import wraps
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Initialize AWS clients
-ecs_client = boto3.client('ecs')
-ssm_client = boto3.client('ssm')
-dynamodb = boto3.resource('dynamodb')
-
-def get_environment_variables():
+def error_handler(func):
     """
-    Get environment variables needed for the Lambda function.
-    """
-    return {
-        'training_job_table_name': os.environ.get('TRAINING_JOB_TABLE_NAME'),
-        'ecs_cluster_name': os.environ.get('ECS_CLUSTER_NAME'),
-        'dcgm_health_check_task': os.environ.get('DCGM_HEALTH_CHECK_TASK')
-    }
-
-def parse_event_message(event_dict, event_attributes):
-    """
-    Parse event message and extract relevant attributes.
+    Decorator for consistent error handling across functions.
 
     Args:
-        event_dict (dict): Event dictionary
-        event_attributes (list): List of attributes to extract
+        func: The function to wrap with error handling
 
     Returns:
-        dict: Dictionary containing extracted attributes
+        The wrapped function with error handling
     """
-    logger.info("Parsing event")
-    event_detail = {}
-    for attribute in event_attributes:
-        if event_dict.get(attribute):
-            event_detail[attribute] = event_dict[attribute]
-    return event_detail
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {str(e)}")
+            return None
+    return wrapper
 
-def get_job_by_task_id(task_id, table):
-    """
-    Get job information by task ID.
+class Config:
+    """Centralized configuration management"""
 
-    Args:
-        task_id (str): ECS task ID
-        table (DynamoDB.Table): DynamoDB table object
+    def __init__(self):
+        """Initialize configuration from environment variables"""
+        self.training_job_table_name = os.environ.get('TRAINING_JOB_TABLE_NAME')
+        self.ecs_cluster_name = os.environ.get('ECS_CLUSTER_NAME')
+        self.dcgm_health_check_task = os.environ.get('DCGM_HEALTH_CHECK_TASK')
 
-    Returns:
-        tuple: (job_id, job_records) if found, (None, None) if not found
-    """
-    try:
-        response = table.scan(
+        # Validate required configuration
+        missing = []
+        if not self.training_job_table_name: missing.append('TRAINING_JOB_TABLE_NAME')
+        if not self.ecs_cluster_name: missing.append('ECS_CLUSTER_NAME')
+        if not self.dcgm_health_check_task: missing.append('DCGM_HEALTH_CHECK_TASK')
+
+        if missing:
+            logger.error(f"Missing required environment variables: {', '.join(missing)}")
+
+class DynamoDBService:
+    """Service for DynamoDB operations"""
+
+    def __init__(self, table_name):
+        """
+        Initialize DynamoDB service.
+
+        Args:
+            table_name (str): DynamoDB table name
+        """
+        self.table_name = table_name
+        self.dynamodb = boto3.resource('dynamodb')
+        self.table = self.dynamodb.Table(table_name)
+
+    @error_handler
+    def get_job_by_task_id(self, task_id):
+        """
+        Get job information by task ID.
+
+        Args:
+            task_id (str): ECS task ID
+
+        Returns:
+            tuple: (job_id, job_records) if found, (None, None) if not found
+        """
+        response = self.table.scan(
             FilterExpression=Attr('ecs_task_id').eq(task_id)
         )
 
@@ -62,7 +80,7 @@ def get_job_by_task_id(task_id, table):
             logger.info(f"Found job ID: {job_id} for task ID: {task_id}")
 
             # Get all records for this job
-            job_records = table.scan(
+            job_records = self.table.scan(
                 FilterExpression=Attr('job_id').eq(job_id)
             )
 
@@ -70,24 +88,23 @@ def get_job_by_task_id(task_id, table):
         else:
             logger.warning(f"No job found for task ID: {task_id}")
             return None, None
-    except Exception as e:
-        logger.error(f"Error getting job by task ID: {str(e)}")
-        return None, None
 
-def update_job_status(table, job_records, status):
-    """
-    Update status for all records associated with a job.
+    @error_handler
+    def update_job_status(self, job_records, status):
+        """
+        Update status for all records associated with a job.
 
-    Args:
-        table (DynamoDB.Table): DynamoDB table object
-        job_records (list): List of job records
-        status (str): Status to update to
-    """
-    try:
+        Args:
+            job_records (list): List of job records
+            status (str): Status to update to
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
         for record in job_records:
             job_id_rank = record.get('job_id_rank')
             if job_id_rank:
-                table.update_item(
+                self.table.update_item(
                     Key={'job_id_rank': job_id_rank},
                     UpdateExpression='SET #s = :val',
                     ExpressionAttributeNames={
@@ -96,56 +113,102 @@ def update_job_status(table, job_records, status):
                     ExpressionAttributeValues={':val': status}
                 )
                 logger.info(f"Updated job_id_rank {job_id_rank} status to {status}")
-    except Exception as e:
-        logger.error(f"Error updating job status: {str(e)}")
+        return True
 
-def stop_tasks_for_job(cluster_name, task_ids):
-    """
-    Stop all tasks associated with a job.
+class ECSService:
+    """Service for ECS operations"""
 
-    Args:
-        cluster_name (str): ECS cluster name
-        task_ids (list): List of task IDs to stop
-    """
-    for task_id in task_ids:
-        try:
-            logger.info(f"Stopping task {task_id}")
-            ecs_client.stop_task(
-                cluster=cluster_name,
-                task=task_id
-            )
-        except Exception as e:
-            logger.error(f"Error stopping task {task_id}: {str(e)}")
+    def __init__(self, cluster_name):
+        """
+        Initialize ECS service.
 
-def run_dcgm_health_check(cluster_arn, container_instance_arn, job_id, dcgm_task_def):
-    """
-    Run DCGM health check task on a container instance.
+        Args:
+            cluster_name (str): ECS cluster name
+        """
+        self.cluster_name = cluster_name
+        self.client = boto3.client('ecs')
 
-    Args:
-        cluster_arn (str): ECS cluster ARN
-        container_instance_arn (str): Container instance ARN
-        job_id (str): Job ID
-        dcgm_task_def (str): DCGM health check task definition
+    @error_handler
+    def stop_task(self, task_id):
+        """
+        Stop a task.
 
-    Returns:
-        dict: ECS run_task response
-    """
-    try:
-        # Run DCGM health check task
-        logger.info(f"Running DCGM health check task on {container_instance_arn}")
+        Args:
+            task_id (str): Task ID to stop
 
-        ecs_client.put_attributes(
-            cluster=cluster_arn,
+        Returns:
+            dict: Response from stop_task API
+        """
+        logger.info(f"Stopping task {task_id}")
+        response = self.client.stop_task(
+            cluster=self.cluster_name,
+            task=task_id
+        )
+        return response
+
+    @error_handler
+    def stop_tasks(self, task_ids):
+        """
+        Stop multiple tasks.
+
+        Args:
+            task_ids (list): List of task IDs to stop
+
+        Returns:
+            bool: True if all tasks were stopped successfully
+        """
+        for task_id in task_ids:
+            self.stop_task(task_id)
+        return True
+
+    @error_handler
+    def set_instance_status(self, container_instance_arn, status, cluster_arn=None):
+        """
+        Set the status attribute of a container instance.
+
+        Args:
+            container_instance_arn (str): Container instance ARN
+            status (str): Status value to set
+            cluster_arn (str, optional): Cluster ARN. Defaults to None.
+
+        Returns:
+            dict: Response from put_attributes API
+        """
+        cluster = cluster_arn if cluster_arn else self.cluster_name
+        response = self.client.put_attributes(
+            cluster=cluster,
             attributes=[
                 {
                     'name': 'status',
-                    'value': 'PENDING_HEALTHCHECK'
+                    'value': status
                 }
             ],
             targetId=container_instance_arn
         )
+        logger.info(f"Set instance {container_instance_arn} status to {status}")
+        return response
 
-        dcgm_response = ecs_client.start_task(
+    @error_handler
+    def run_dcgm_health_check(self, cluster_arn, container_instance_arn, job_id, dcgm_task_def):
+        """
+        Run DCGM health check task on a container instance.
+
+        Args:
+            cluster_arn (str): ECS cluster ARN
+            container_instance_arn (str): Container instance ARN
+            job_id (str): Job ID
+            dcgm_task_def (str): DCGM health check task definition
+
+        Returns:
+            dict: ECS start_task response
+        """
+        logger.info(f"Running DCGM health check task on {container_instance_arn}")
+
+        # Set instance status to PENDING_HEALTHCHECK
+        self.set_instance_status(container_instance_arn, 'PENDING_HEALTHCHECK', cluster_arn)
+
+        # Run DCGM health check task
+        response = self.client.start_task(
             cluster=cluster_arn,
             taskDefinition=dcgm_task_def,
             containerInstances=[container_instance_arn],
@@ -154,57 +217,49 @@ def run_dcgm_health_check(cluster_arn, container_instance_arn, job_id, dcgm_task
                 'value': job_id
             }]
         )
-        logger.info(f"DCGM health check task response: {dcgm_response}")
-        return dcgm_response
-    except Exception as e:
-        logger.error(f"Error running DCGM health check task: {str(e)}")
-        return None
+        logger.info(f"DCGM health check task response: {response}")
+        return response
 
-def handle_user_stopped_task(task_id, table):
-    """
-    Handle task stopped by user.
-    Based on flowchart, update the job status to Other.
+    @error_handler
+    def describe_task(self, task_id):
+        """
+        Get information about a task.
 
-    Args:
-        task_id (str): ECS task ID
-        table (DynamoDB.Table): DynamoDB table object
-    """
-    logger.info("Task was stopped by user")
+        Args:
+            task_id (str): Task ID
 
-    job_id, job_records = get_job_by_task_id(task_id, table)
-    if job_id and job_records:
-        update_job_status(table, job_records, 'Other')
+        Returns:
+            dict: Task information
+        """
+        response = self.client.describe_tasks(
+            cluster=self.cluster_name,
+            tasks=[task_id]
+        )
 
-def handle_task_exit_code_1(task_id, cluster_arn, cluster_name, table, env_vars):
-    """
-    Handle task with exit code 1.
-    Based on flowchart, stop all tasks for this job and run DCGM health check.
+        if not response.get('tasks'):
+            logger.warning(f"No task information found for task ID {task_id}")
+            return None
 
-    Args:
-        task_id (str): ECS task ID
-        cluster_arn (str): ECS cluster ARN
-        cluster_name (str): ECS cluster name
-        table (DynamoDB.Table): DynamoDB table object
-        env_vars (dict): Environment variables
-    """
-    logger.info("Task exited with code 1")
+        return response['tasks'][0]
 
-    job_id, job_records = get_job_by_task_id(task_id, table)
-    if job_id and job_records:
-        # Get all task IDs for this job
-        task_ids = []
-        for record in job_records:
-            task_id = record.get('ecs_task_id')
-            if task_id:
-                task_ids.append(task_id)
+    @error_handler
+    def get_container_instances_from_tasks(self, task_ids):
+        """
+        Get container instance ARNs from task IDs.
 
-        # Stop all tasks for this job
-        stop_tasks_for_job(cluster_name, task_ids)
+        Args:
+            task_ids (list): List of task IDs
 
-        # Query task details to get container instance attributes
-        tasks_response = ecs_client.describe_tasks(
-            cluster=cluster_name,
-            tasks=[task_ids[0] if task_ids else task_id]  # Use the first task ID or current task ID
+        Returns:
+            list: List of unique container instance ARNs
+        """
+        if not task_ids:
+            return []
+
+        # Use the first task ID to query
+        tasks_response = self.client.describe_tasks(
+            cluster=self.cluster_name,
+            tasks=[task_ids[0]]
         )
 
         container_instance_arns = []
@@ -212,91 +267,232 @@ def handle_task_exit_code_1(task_id, cluster_arn, cluster_name, table, env_vars)
             if task.get('containerInstanceArn') and task['containerInstanceArn'] not in container_instance_arns:
                 container_instance_arns.append(task['containerInstanceArn'])
 
-        # Run GPU DCGM check task on each container instance
-        for container_instance_arn in container_instance_arns:
-            run_dcgm_health_check(
-                cluster_arn,
-                container_instance_arn,
-                job_id,
-                env_vars['dcgm_health_check_task']
-            )
+        return container_instance_arns
 
-        # Update status to 'stop' for all records with this job ID
-        update_job_status(table, job_records, 'STOPPED')
+class TaskProcessor:
+    """Processor for task-related operations"""
 
-def handle_task_exit_code_0(task_id, table):
-    """
-    Handle task with exit code 0.
-    Based on flowchart, check current status and update if needed.
+    def __init__(self, db_service, ecs_service, config):
+        """
+        Initialize task processor.
 
-    Args:
-        task_id (str): ECS task ID
-        table (DynamoDB.Table): DynamoDB table object
-    """
-    logger.info("Task exited with code 0")
+        Args:
+            db_service (DynamoDBService): DynamoDB service instance
+            ecs_service (ECSService): ECS service instance
+            config (Config): Configuration
+        """
+        self.db_service = db_service
+        self.ecs_service = ecs_service
+        self.config = config
 
-    job_id, job_records = get_job_by_task_id(task_id, table)
-    if job_id and job_records:
+    def process_task_state_change(self, detail):
+        """
+        Process ECS Task State Change event.
+
+        Args:
+            detail (dict): Event detail
+
+        Returns:
+            bool: True if processed successfully, False otherwise
+        """
+        # Check if task is STOPPED
+        if detail.get('lastStatus') != 'STOPPED':
+            logger.info(f"Task status is {detail.get('lastStatus')}, no action needed")
+            return False
+
+        task_id = detail['taskArn'].split('/')[2]
+        cluster_arn = detail['clusterArn']
+        cluster_name = cluster_arn.split('/')[1]
+
+        logger.info(f"Processing stopped task {task_id} in cluster {cluster_name}")
+
+        # Get task detail
+        task_detail = self.ecs_service.describe_task(task_id)
+        if not task_detail:
+            logger.error(f"Could not get details for task {task_id}")
+            return False
+
+        stop_code = task_detail.get('stopCode')
+
+        # Check if task was stopped by user
+        if stop_code and stop_code.startswith('UserInitiated'):
+            return self.handle_user_stopped_task(task_id)
+        else:
+            # Get exit code from containers
+            exit_code = self._get_container_exit_code(task_detail)
+            logger.info(f"Task exit code: {exit_code}")
+
+            if exit_code == 1:
+                return self.handle_task_exit_code_1(task_id, cluster_arn, task_detail)
+            elif exit_code == 0:
+                return self.handle_task_exit_code_0(task_id)
+            else:
+                logger.info(f"Unhandled exit code: {exit_code}, no action taken")
+                return False
+
+    def _get_container_exit_code(self, task_detail):
+        """
+        Get exit code from task containers.
+
+        Args:
+            task_detail (dict): Task detail
+
+        Returns:
+            int or None: Exit code if found, None otherwise
+        """
+        containers = task_detail.get('containers', [])
+        for container in containers:
+            if container.get('exitCode') is not None:
+                return container.get('exitCode')
+        return None
+
+    def handle_user_stopped_task(self, task_id):
+        """
+        Handle task stopped by user.
+
+        Args:
+            task_id (str): ECS task ID
+
+        Returns:
+            bool: True if handled successfully, False otherwise
+        """
+        logger.info("Task was stopped by user")
+
+        job_id, job_records = self.db_service.get_job_by_task_id(task_id)
+        if job_id and job_records:
+            self.db_service.update_job_status(job_records, 'Other')
+            return True
+        return False
+
+    def handle_task_exit_code_0(self, task_id):
+        """
+        Handle task with exit code 0 (success).
+
+        Args:
+            task_id (str): ECS task ID
+
+        Returns:
+            bool: True if handled successfully, False otherwise
+        """
+        logger.info("Task exited with code 0")
+
+        job_id, job_records = self.db_service.get_job_by_task_id(task_id)
+        if not job_id or not job_records:
+            return False
+
         # Check current status
         current_status = job_records[0].get('status')
         if current_status == 'complete':
             logger.info("Job status is already complete, exiting")
-            return
+            return True
 
         if current_status == 'inprogress':
             # Update status to 'complete'
-            update_job_status(table, job_records, 'complete')
+            self.db_service.update_job_status(job_records, 'complete')
+            return True
 
-def handle_task_state_change(detail, env_vars):
+        return False
+
+    def handle_task_exit_code_1(self, task_id, cluster_arn, task_detail):
+        """
+        Handle task with exit code 1 (error).
+
+        Args:
+            task_id (str): ECS task ID
+            cluster_arn (str): ECS cluster ARN
+            task_detail (dict): Task detail
+
+        Returns:
+            bool: True if handled successfully, False otherwise
+        """
+        logger.info("Task exited with code 1")
+
+        job_id, job_records = self.db_service.get_job_by_task_id(task_id)
+        if not job_id or not job_records:
+            return False
+
+        # Get all task IDs for this job
+        task_ids = self._extract_task_ids(job_records)
+
+        # Stop all tasks for this job
+        self.ecs_service.stop_tasks(task_ids)
+
+        # Set related instances to PENDING
+        self._set_related_instances_pending(job_records, task_detail, cluster_arn)
+
+        # Get container instance ARNs
+        container_instance_arns = self.ecs_service.get_container_instances_from_tasks(task_ids)
+
+        # Run GPU DCGM check task on each container instance
+        for container_instance_arn in container_instance_arns:
+            self.ecs_service.run_dcgm_health_check(
+                cluster_arn,
+                container_instance_arn,
+                job_id,
+                self.config.dcgm_health_check_task
+            )
+
+        # Update status to 'STOPPED' for all records with this job ID
+        self.db_service.update_job_status(job_records, 'STOPPED')
+        return True
+
+    def _extract_task_ids(self, job_records):
+        """
+        Extract task IDs from job records.
+
+        Args:
+            job_records (list): List of job records
+
+        Returns:
+            list: List of task IDs
+        """
+        task_ids = []
+        for record in job_records:
+            task_id = record.get('ecs_task_id')
+            if task_id:
+                task_ids.append(task_id)
+        return task_ids
+
+    def _set_related_instances_pending(self, job_records, task_detail, cluster_arn):
+        """
+        Set related instances to PENDING status.
+
+        Args:
+            job_records (list): List of job records
+            task_detail (dict): Task detail
+            cluster_arn (str): Cluster ARN
+
+        Returns:
+            bool: True if successful
+        """
+        current_instance_arn = task_detail.get('containerInstanceArn')
+
+        for record in job_records:
+            container_instance_arn = record.get('containerInstanceArn')
+            if container_instance_arn and container_instance_arn != current_instance_arn:
+                self.ecs_service.set_instance_status(
+                    container_instance_arn,
+                    'PENDING',
+                    cluster_arn
+                )
+
+        return True
+
+def validate_ecs_task_event(event):
     """
-    Handle ECS Task State Change event according to flowchart
+    Validates that the event is an ECS event.
 
     Args:
-        detail (dict): Event detail
-        env_vars (dict): Environment variables
+        event (dict): The event to validate
+
+    Returns:
+        bool: True if valid event, False otherwise
     """
-    # Check if task is STOPPED
-    if detail.get('lastStatus') != 'STOPPED':
-        logger.info(f"Task status is {detail.get('lastStatus')}, no action needed")
-        return
+    if event.get("source") != "aws.ecs":
+        logger.error("Function only supports input from events with a source type of: aws.ecs")
+        return False
 
-    task_id = detail['taskArn'].split('/')[2]
-    cluster_arn = detail['clusterArn']
-    cluster_name = cluster_arn.split('/')[1]
-
-    logger.info(f"Processing stopped task {task_id} in cluster {cluster_name}")
-
-    # Get task detail using describeTasks
-    task_detail = ecs_client.describe_tasks(
-        cluster=cluster_name,
-        tasks=[task_id]
-    )["tasks"][0]
-
-    # Get DynamoDB table
-    table = dynamodb.Table(env_vars['training_job_table_name'])
-
-    stop_code = task_detail.get('stopCode')
-
-    # Check if task was stopped by user (based on stopCode or other attributes)
-    if stop_code.startswith('UserInitiated'):
-        handle_user_stopped_task(task_id, table)
-        return
-    else:
-        exit_code = None
-        containers = task_detail.get('containers', [])
-        for container in containers:
-            if container.get('exitCode') is not None:
-                exit_code = container.get('exitCode')
-                break
-
-        logger.info(f"Task exit code: {exit_code}")
-
-        if exit_code == 1:
-            handle_task_exit_code_1(task_id, cluster_arn, cluster_name, table, env_vars)
-        elif exit_code == 0:
-            handle_task_exit_code_0(task_id, table)
-        return
-    return
+    return True
 
 def lambda_handler(event, context):
     """
@@ -311,12 +507,11 @@ def lambda_handler(event, context):
     """
     logger.info('Event received: %s', json.dumps(event))
 
-    # Get environment variables
-    env_vars = get_environment_variables()
+    # Initialize configuration
+    config = Config()
 
-    # Verify this is an ECS event from EventBridge
-    if event.get("source") != "aws.ecs":
-        logger.error("Function only supports input from events with a source type of: aws.ecs")
+    # Validate event
+    if not validate_ecs_task_event(event):
         return {
             'statusCode': 400,
             'body': 'Function only supports input from events with a source type of: aws.ecs'
@@ -324,7 +519,10 @@ def lambda_handler(event, context):
 
     # Handle ECS Task State Change
     if event["detail-type"] == "ECS Task State Change":
-        handle_task_state_change(event["detail"], env_vars)
+        db_service = DynamoDBService(config.training_job_table_name)
+        ecs_service = ECSService(config.ecs_cluster_name)
+        processor = TaskProcessor(db_service, ecs_service, config)
+        processor.process_task_state_change(event["detail"])
 
     return {
         'statusCode': 200,
