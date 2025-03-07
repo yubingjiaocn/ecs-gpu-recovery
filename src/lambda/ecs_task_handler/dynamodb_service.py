@@ -195,7 +195,7 @@ class DynamoDBService:
         logger.info(f"[ATTRIBUTE_CHANGE] Updating job {job_id} submitted_ecs_task_ids to {task_ids}")
         self.job_table.update_item(
             Key={'job_id': job_id},
-            UpdateExpression='SET submittd_ecs_task_ids = :val, updated_at = :time',
+            UpdateExpression='SET submitted_ecs_task_ids = :val, updated_at = :time',
             ExpressionAttributeValues={
                 ':val': ','.join(task_ids) if isinstance(task_ids, list) else task_ids,
                 ':time': datetime.datetime.now().isoformat()

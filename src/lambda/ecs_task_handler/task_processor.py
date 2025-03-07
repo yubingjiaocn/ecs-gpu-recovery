@@ -94,7 +94,7 @@ class TaskProcessor:
         if not job_record:
             return []
 
-        submitted_ecs_task_ids = job_record.get('submittd_ecs_task_ids', '')
+        submitted_ecs_task_ids = job_record.get('submitted_ecs_task_ids', '')
         if isinstance(submitted_ecs_task_ids, str):
             # If it's stored as a comma-separated string
             return [task_id.strip() for task_id in submitted_ecs_task_ids.split(',') if task_id.strip()]

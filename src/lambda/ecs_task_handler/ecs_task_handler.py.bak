@@ -253,7 +253,7 @@ class DynamoDBService:
         logger.info(f"[ATTRIBUTE_CHANGE] Updating job {job_id} submitted_ecs_task_ids to {task_ids}")
         self.job_table.update_item(
             Key={'job_id': job_id},
-            UpdateExpression='SET submittd_ecs_task_ids = :val, updated_at = :time',
+            UpdateExpression='SET submitted_ecs_task_ids = :val, updated_at = :time',
             ExpressionAttributeValues={
                 ':val': ','.join(task_ids) if isinstance(task_ids, list) else task_ids,
                 ':time': datetime.datetime.now().isoformat()
@@ -529,7 +529,7 @@ class TaskProcessor:
         if not job_record:
             return []
 
-        submitted_ecs_task_ids = job_record.get('submittd_ecs_task_ids', '')
+        submitted_ecs_task_ids = job_record.get('submitted_ecs_task_ids', '')
         if isinstance(submitted_ecs_task_ids, str):
             # If it's stored as a comma-separated string
             return [task_id.strip() for task_id in submitted_ecs_task_ids.split(',') if task_id.strip()]

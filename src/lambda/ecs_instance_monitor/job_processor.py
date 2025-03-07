@@ -74,12 +74,12 @@ class JobProcessor:
 
         # Get job record to access submitted_ecs_task_ids
         job_record = self.db_service.get_job(job_id)
-        if not job_record or 'submittd_ecs_task_ids' not in job_record:
+        if not job_record or 'submitted_ecs_task_ids' not in job_record:
             logger.warning(f"[JOB_RETRY_ERROR] No job record or task IDs found for job ID {job_id}")
             return False
 
         # Use submitted_ecs_task_ids from job table as the authority source
-        task_ids = job_record.get('submittd_ecs_task_ids', [])
+        task_ids = job_record.get('submitted_ecs_task_ids', [])
         if not task_ids:
             logger.warning(f"[JOB_RETRY_ERROR] No task IDs found in job record for job ID {job_id}")
             return False
@@ -143,7 +143,7 @@ class JobProcessor:
             logger.info(f"[JOB_RETRY_UPDATE] Updating job {job_id} retry count to 1 and task IDs")
             self.db_service.job_table.update_item(
                 Key={'job_id': job_id},
-                UpdateExpression='SET retry = :rt, submittd_ecs_task_ids = :tasks, updated_at = :time',
+                UpdateExpression='SET retry = :rt, submitted_ecs_task_ids = :tasks, updated_at = :time',
                 ExpressionAttributeValues={
                     ':rt': '1',
                     ':tasks': new_task_ids,
@@ -170,12 +170,12 @@ class JobProcessor:
 
         # Get job record to access submitted_ecs_task_ids
         job_record = self.db_service.get_job(job_id)
-        if not job_record or 'submittd_ecs_task_ids' not in job_record:
+        if not job_record or 'submitted_ecs_task_ids' not in job_record:
             logger.warning(f"[JOB_RETRY_ERROR] No job record or task IDs found for job ID {job_id}")
             return False
 
         # Use submitted_ecs_task_ids from job table as the authority source
-        task_ids = job_record.get('submittd_ecs_task_ids', [])
+        task_ids = job_record.get('submitted_ecs_task_ids', [])
         if not task_ids:
             logger.warning(f"[JOB_RETRY_ERROR] No task IDs found in job record for job ID {job_id}")
             return False
