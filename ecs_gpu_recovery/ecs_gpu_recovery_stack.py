@@ -17,26 +17,37 @@ class EcsGpuRecoveryStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # Create DynamoDB table for container instance status tracking
-        container_instance_table = dynamodb.Table(
-            self, "ContainerInstanceTable",
+        # Create DynamoDB table for task tracking (individual ECS tasks)
+        task_table = dynamodb.Table(
+            self, "TaskTable",
             partition_key=dynamodb.Attribute(
-                name="container_inst_id",
+                name="ecs_task_id",
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="ecs_container_instance"
+            table_name="ecs_task"
         )
 
-        # Create DynamoDB table for job tracking
-        training_job_table = dynamodb.Table(
-            self, "HybridGpuTrainingJobTable",
+        # Create DynamoDB table for job tracking (collection of tasks)
+        job_table = dynamodb.Table(
+            self, "JobTable",
             partition_key=dynamodb.Attribute(
-                name="job_id_rank",
+                name="job_id",
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="ecs-job-sub"
+            table_name="ecs_job"
+        )
+
+        # Create DynamoDB table for node information tracking
+        node_table = dynamodb.Table(
+            self, "NodeTable",
+            partition_key=dynamodb.Attribute(
+                name="node_name",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            table_name="ecs_node"
         )
 
         # Lambda function for ECS task handling
@@ -48,9 +59,11 @@ class EcsGpuRecoveryStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=256,
             environment={
-                "TRAINING_JOB_TABLE_NAME": training_job_table.table_name,
-                "ECS_CLUSTER_NAME": "nwcd-gpu-testing",  # Updated ECS cluster name
-                "DCGM_HEALTH_CHECK_TASK": "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:1"
+                "TASK_TABLE_NAME": task_table.table_name,
+                "JOB_TABLE_NAME": job_table.table_name,
+                "NODE_TABLE_NAME": node_table.table_name,
+                "ECS_CLUSTER_NAME": "nwcd-gpu-testing",
+                "DCGM_HEALTH_CHECK_TASK": "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:2"
             },
             description="Lambda function to manage ECS GPU training tasks"
         )
@@ -64,17 +77,22 @@ class EcsGpuRecoveryStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=256,
             environment={
-                "TRAINING_JOB_TABLE_NAME": training_job_table.table_name,
-                "CONTAINER_INSTANCE_TABLE_NAME": container_instance_table.table_name,
+                "TASK_TABLE_NAME": task_table.table_name,
+                "JOB_TABLE_NAME": job_table.table_name,
+                "NODE_TABLE_NAME": node_table.table_name,
                 "ECS_CLUSTER_NAME": "nwcd-gpu-testing"
             },
             description="Lambda function to monitor DCGM task completions and manage recovery actions"
         )
 
         # Grant Lambda permissions to access DynamoDB tables
-        training_job_table.grant_read_write_data(ecs_task_handler)
-        training_job_table.grant_read_write_data(dcgm_task_monitor)
-        container_instance_table.grant_read_write_data(dcgm_task_monitor)
+        task_table.grant_read_write_data(ecs_task_handler)
+        job_table.grant_read_write_data(ecs_task_handler)
+        node_table.grant_read_write_data(ecs_task_handler)
+
+        task_table.grant_read_write_data(dcgm_task_monitor)
+        job_table.grant_read_write_data(dcgm_task_monitor)
+        node_table.grant_read_write_data(dcgm_task_monitor)
 
         # Grant Lambda permissions to access ECS and SSM
         ecs_task_handler.add_to_role_policy(
@@ -140,7 +158,9 @@ class EcsGpuRecoveryStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=256,
             environment={
-                "TRAINING_JOB_TABLE_NAME": training_job_table.table_name,
+                "TASK_TABLE_NAME": task_table.table_name,
+                "JOB_TABLE_NAME": job_table.table_name,
+                "NODE_TABLE_NAME": node_table.table_name,
                 "ECS_CLUSTER_NAME": "nwcd-gpu-testing",
                 "SNS_TOPIC_ARN": notification_topic.topic_arn
             },
@@ -148,7 +168,9 @@ class EcsGpuRecoveryStack(Stack):
         )
 
         # Grant Lambda 3 permissions
-        training_job_table.grant_read_write_data(ecs_instance_monitor)
+        task_table.grant_read_write_data(ecs_instance_monitor)
+        job_table.grant_read_write_data(ecs_instance_monitor)
+        node_table.grant_read_write_data(ecs_instance_monitor)
         notification_topic.grant_publish(ecs_instance_monitor)
 
         ecs_instance_monitor.add_to_role_policy(

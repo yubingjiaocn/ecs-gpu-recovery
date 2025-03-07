@@ -2,6 +2,7 @@ import json
 import boto3
 import os
 import logging
+import datetime
 from typing import Dict, List, Tuple, Optional, Any, Union
 from boto3.dynamodb.conditions import Attr
 
@@ -96,30 +97,41 @@ def get_job_id_from_task(task_id: str, cluster_name: str) -> Optional[str]:
         logger.error(f"Error getting job ID from task: {str(e)}")
         return None
 
-def get_job_data(table, job_id: str) -> Optional[Dict[str, Any]]:
+def get_job_and_tasks(job_table, task_table, job_id: str) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Gets job information from DynamoDB.
+    Gets job and task information from DynamoDB.
 
     Args:
-        table: The DynamoDB table
+        job_table: The job DynamoDB table
+        task_table: The task DynamoDB table
         job_id: The job ID
 
     Returns:
-        dict: The job data if found, None otherwise
+        tuple: (job_record, task_records) if found, (None, []) if not found
     """
     try:
-        job_dynamodb_data = table.scan(
+        # Get job record
+        job_response = job_table.get_item(
+            Key={'job_id': job_id}
+        )
+
+        job_record = job_response.get('Item')
+        if not job_record:
+            logger.warning(f"No job record found for job_id {job_id}")
+            return None, []
+
+        # Get all tasks for this job
+        task_response = task_table.scan(
             FilterExpression=Attr('job_id').eq(job_id)
         )
 
-        if not job_dynamodb_data or 'Items' not in job_dynamodb_data or not job_dynamodb_data['Items']:
-            logger.warning(f"No job data found for job_id {job_id}")
-            return None
+        task_records = task_response.get('Items', [])
+        logger.info(f"Found {len(task_records)} tasks for job_id {job_id}")
 
-        return job_dynamodb_data
+        return job_record, task_records
     except Exception as e:
         logger.error(f"Error getting job data: {str(e)}")
-        return None
+        return None, []
 
 def get_instance_id(cluster_arn: str, container_instance_arn: str) -> Optional[str]:
     """
@@ -147,6 +159,22 @@ def get_instance_id(cluster_arn: str, container_instance_arn: str) -> Optional[s
         logger.error(f"Error getting instance ID: {str(e)}")
         return None
 
+def get_node_name_from_container_instance(task_records: List[Dict[str, Any]], container_instance_arn: str) -> Optional[str]:
+    """
+    Gets the node name associated with a container instance ARN.
+
+    Args:
+        task_records: List of task records
+        container_instance_arn: Container instance ARN
+
+    Returns:
+        str: Node name if found, None otherwise
+    """
+    for task in task_records:
+        if task.get('container_instance_arn') == container_instance_arn:
+            return task.get('node_name')
+    return None
+
 # ----- Instance Management Functions -----
 
 def update_container_instance_status(cluster_arn: str, container_instance_arn: str, status: str) -> bool:
@@ -167,10 +195,11 @@ def update_container_instance_status(cluster_arn: str, container_instance_arn: s
             attributes=[
                 {
                     'name': 'status',
-                    'value': status
+                    'value': status,
+                    'target-type': 'container-instance',
+                    'targetId': container_instance_arn
                 }
-            ],
-            targetId=container_instance_arn
+            ]
         )
         logger.info(f"Updated container instance {container_instance_arn} status to {status}")
         return True
@@ -201,85 +230,106 @@ def reboot_instance(instance_id: str) -> bool:
         logger.error(f"Error executing reboot command: {str(e)}")
         return False
 
-def update_container_instance_in_dynamodb(container_instance_arn: str, status: str = 'REBOOTED') -> bool:
+def update_node_status(node_table, node_name: str, status: str) -> bool:
     """
-    Updates container instance status in DynamoDB.
+    Updates node status in DynamoDB.
 
     Args:
-        container_instance_arn: The container instance ARN
+        node_table: The node DynamoDB table
+        node_name: The node name
         status: The new status
 
     Returns:
         bool: True if successful, False otherwise
     """
-    container_inst_table_name = os.environ.get('CONTAINER_INSTANCE_TABLE_NAME')
-    if not container_inst_table_name:
-        logger.warning("CONTAINER_INSTANCE_TABLE_NAME environment variable not set")
+    if not node_name:
+        logger.warning("No node name provided")
         return False
 
     try:
-        container_inst_id = container_instance_arn.split('/')[-1]
-        container_inst_table = dynamodb.Table(container_inst_table_name)
-
-        container_inst_table.update_item(
-            Key={'container_inst_id': container_inst_id},
-            UpdateExpression='SET #s = :val',
-            ExpressionAttributeNames={
-                '#s': 'status'
-            },
+        node_table.update_item(
+            Key={'node_name': node_name},
+            UpdateExpression='SET node_status = :val, updated_at = :time',
             ExpressionAttributeValues={
-                ':val': status
-            },
-            ReturnValues="UPDATED_NEW"
+                ':val': status,
+                ':time': datetime.datetime.now().isoformat()
+            }
         )
-        logger.info(f"Updated container instance {container_inst_id} status to {status} in DynamoDB")
+        logger.info(f"Updated node {node_name} status to {status} in DynamoDB")
         return True
     except Exception as e:
-        logger.error(f"Error updating container instance in DynamoDB: {str(e)}")
+        logger.error(f"Error updating node status in DynamoDB: {str(e)}")
         return False
 
-# ----- Job Status Management Functions -----
+# ----- Job and Task Status Management Functions -----
 
-def update_job_status(table, job_id_ranks: List[str], status: str) -> bool:
+def update_job_status(job_table, job_id: str, status: str) -> bool:
     """
-    Updates job status in DynamoDB for multiple job_id_rank entries.
+    Updates job status in DynamoDB.
 
     Args:
-        table: The DynamoDB table
-        job_id_ranks: List of job_id_rank values
+        job_table: The job DynamoDB table
+        job_id: Job ID
         status: The new status
 
     Returns:
-        bool: True if all updates were successful, False otherwise
+        bool: True if successful, False otherwise
     """
-    success = True
-    for job_id_rank in job_id_ranks:
-        try:
-            response = table.update_item(
-                Key={'job_id_rank': job_id_rank},
-                UpdateExpression='SET job_status = :val',
-                ExpressionAttributeValues={
-                    ':val': status
-                },
-                ReturnValues="UPDATED_NEW"
-            )
-            logger.info(f"Updated job {job_id_rank} status to {status}")
-        except Exception as e:
-            logger.error(f"Error updating job {job_id_rank} status: {str(e)}")
-            success = False
+    try:
+        job_table.update_item(
+            Key={'job_id': job_id},
+            UpdateExpression='SET job_status = :val, updated_at = :time',
+            ExpressionAttributeValues={
+                ':val': status,
+                ':time': datetime.datetime.now().isoformat()
+            }
+        )
+        logger.info(f"Updated job {job_id} status to {status}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating job status: {str(e)}")
+        return False
 
-    return success
+def update_task_status(task_table, task_id: str, status: str) -> bool:
+    """
+    Updates task status in DynamoDB.
+
+    Args:
+        task_table: The task DynamoDB table
+        task_id: Task ID
+        status: The new status
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        task_table.update_item(
+            Key={'ecs_task_id': task_id},
+            UpdateExpression='SET task_status = :val, updated_at = :time',
+            ExpressionAttributeValues={
+                ':val': status,
+                ':time': datetime.datetime.now().isoformat()
+            }
+        )
+        logger.info(f"Updated task {task_id} status to {status}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating task status: {str(e)}")
+        return False
 
 # ----- Exit Code Handlers -----
 
-def handle_exit_code_0(table, job_data: Dict[str, Any], cluster_arn: str) -> bool:
+def handle_exit_code_0(job_table, task_table, node_table, job_record: Dict[str, Any], task_records: List[Dict[str, Any]], cluster_arn: str) -> bool:
     """
     Handles a task with exit code 0 (successful DCGM run but job failed).
     Updates job status to FAILED and releases container instances.
 
     Args:
-        table: The DynamoDB table
-        job_data: The job data from DynamoDB
+        job_table: The job DynamoDB table
+        task_table: The task DynamoDB table
+        node_table: The node DynamoDB table
+        job_record: The job record
+        task_records: List of task records
         cluster_arn: The cluster ARN
 
     Returns:
@@ -288,49 +338,67 @@ def handle_exit_code_0(table, job_data: Dict[str, Any], cluster_arn: str) -> boo
     logger.info("DCGM task exit code 0, updating job status to FAILED")
 
     try:
-        # Extract job_id_ranks and container instances
-        job_id_ranks = [item['job_id_rank'] for item in job_data['Items']]
+        job_id = job_record.get('job_id')
+
+        # Update job status
+        update_job_status(job_table, job_id, 'FAILED')
+
+        # Update all task statuses
+        for task in task_records:
+            task_id = task.get('ecs_task_id')
+            if task_id:
+                update_task_status(task_table, task_id, 'FAILED')
+
+        # Release container instances to AVAILABLE
         container_instances = {}
+        for task in task_records:
+            container_instance_arn = task.get('container_instance_arn')
+            node_name = task.get('node_name')
 
-        # Identify failed and other instances
-        for item in job_data['Items']:
-            container_inst_arn = item.get('containerInstanceArn')
-            if container_inst_arn:
-                container_instances[container_inst_arn] = True
+            if container_instance_arn and container_instance_arn not in container_instances:
+                container_instances[container_instance_arn] = node_name
 
-        # Release related instances to AVAILABLE
-        for container_inst_arn in container_instances:
-            update_container_instance_status(cluster_arn, container_inst_arn, 'AVAILABLE')
+        for container_instance_arn, node_name in container_instances.items():
+            # Update ECS container instance status
+            update_container_instance_status(cluster_arn, container_instance_arn, 'AVAILABLE')
 
-        # Update job status in DynamoDB
-        update_job_status(table, job_id_ranks, 'FAILED')
+            # Update node status in DynamoDB
+            if node_name:
+                update_node_status(node_table, node_name, 'AVAILABLE')
 
         return True
     except Exception as e:
         logger.error(f"Error handling exit code 0: {str(e)}")
         return False
 
-def handle_exit_code_1(detail: Dict[str, Any], cluster_arn: str, job_data: Dict[str, Any]) -> bool:
+def handle_exit_code_1(job_table, task_table, node_table, detail: Dict[str, Any], cluster_arn: str, job_record: Dict[str, Any], task_records: List[Dict[str, Any]]) -> bool:
     """
     Handles a task with exit code 1 (DCGM detected an issue).
     May reboot the instance if retry count is 0.
 
     Args:
+        job_table: The job DynamoDB table
+        task_table: The task DynamoDB table
+        node_table: The node DynamoDB table
         detail: The detail section of the event
         cluster_arn: The cluster ARN
-        job_data: The job data from DynamoDB
+        job_record: The job record
+        task_records: List of task records
 
     Returns:
         bool: True if successful, False otherwise
     """
     try:
         # Check retry to determine if reboot is needed
-        retry = job_data['Items'][0].get('retry')
+        retry = job_record.get('retry', 0)
         logger.info(f"DCGM task exit code 1, retry: {retry}")
 
-        if retry and int(retry) == 0:
+        if retry == 0:
             logger.info("retry is 0, initiating instance reboot")
             container_instance_arn = detail['containerInstanceArn']
+
+            # Get node name from task records
+            node_name = get_node_name_from_container_instance(task_records, container_instance_arn)
 
             # Get instance ID from container instance
             instance_id = get_instance_id(cluster_arn, container_instance_arn)
@@ -341,12 +409,13 @@ def handle_exit_code_1(detail: Dict[str, Any], cluster_arn: str, job_data: Dict[
             # Mark instance as REBOOTING
             update_container_instance_status(cluster_arn, container_instance_arn, 'REBOOTING')
 
+            # Update node status in DynamoDB
+            if node_name:
+                update_node_status(node_table, node_name, 'REBOOTING')
+
             # Send reboot command
             if not reboot_instance(instance_id):
                 return False
-
-            # Update container instance status in DynamoDB
-            update_container_instance_in_dynamodb(container_instance_arn)
 
         return True
     except Exception as e:
@@ -371,15 +440,28 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info('Event received: %s', json.dumps(event))
 
     # Get environment variables
-    training_job_table_name = os.environ.get('TRAINING_JOB_TABLE_NAME')
-    if not training_job_table_name:
-        logger.error("TRAINING_JOB_TABLE_NAME environment variable not set")
+    task_table_name = os.environ.get('TASK_TABLE_NAME')
+    job_table_name = os.environ.get('JOB_TABLE_NAME')
+    node_table_name = os.environ.get('NODE_TABLE_NAME')
+
+    # Validate environment variables
+    missing = []
+    if not task_table_name: missing.append('TASK_TABLE_NAME')
+    if not job_table_name: missing.append('JOB_TABLE_NAME')
+    if not node_table_name: missing.append('NODE_TABLE_NAME')
+
+    if missing:
+        error_msg = f"Missing required environment variables: {', '.join(missing)}"
+        logger.error(error_msg)
         return {
             'statusCode': 500,
-            'body': 'TRAINING_JOB_TABLE_NAME environment variable not set'
+            'body': error_msg
         }
 
-    table = dynamodb.Table(training_job_table_name)
+    # Initialize DynamoDB tables
+    task_table = dynamodb.Table(task_table_name)
+    job_table = dynamodb.Table(job_table_name)
+    node_table = dynamodb.Table(node_table_name)
 
     # Validate event
     if not is_valid_ecs_event(event):
@@ -431,12 +513,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'body': 'No job_id tag found on task'
         }
 
-    # Get job information from DynamoDB
-    job_data = get_job_data(table, job_id)
-    if not job_data:
+    # Get job and task information from DynamoDB
+    job_record, task_records = get_job_and_tasks(job_table, task_table, job_id)
+    if not job_record:
         return {
             'statusCode': 200,
-            'body': f"No job data found for job_id {job_id}"
+            'body': f"No job record found for job_id {job_id}"
         }
 
     # Process containers based on exit code
@@ -454,7 +536,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         if exit_code == 0:
             # Task exited with code 0, update job status to failed
-            if not handle_exit_code_0(table, job_data, cluster_arn):
+            if not handle_exit_code_0(job_table, task_table, node_table, job_record, task_records, cluster_arn):
                 return {
                     'statusCode': 500,
                     'body': 'Error handling exit code 0'
@@ -462,7 +544,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         elif exit_code == 1:
             # Task exited with code 1, check if reboot needed
-            if not handle_exit_code_1(detail, cluster_arn, job_data):
+            if not handle_exit_code_1(job_table, task_table, node_table, detail, cluster_arn, job_record, task_records):
                 return {
                     'statusCode': 500,
                     'body': 'Error handling exit code 1'

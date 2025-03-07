@@ -138,3 +138,37 @@ cdk deploy
 - `cdk ls`: List all stacks in the app
 - `cdk diff`: Compare deployed stack with current state
 - `cdk docs`: Open CDK documentation
+
+## Testing
+
+The project includes a test suite for testing the ECS GPU Recovery workflow with mock containers. See [tests/integration/README.md](tests/integration/README.md) for details.
+
+### Test Components
+
+1. **Task Definitions**: Three mock task definitions using busybox images:
+   - `mock-failed-training-task`: Exits with code 1 after 120 seconds
+   - `mock-successful-training-task`: Runs indefinitely
+   - `mock-dcgm-health-check`: Exits with code 1 after 60 seconds
+
+2. **Test Script**: A Python script that:
+   - Creates the task definitions if they don't exist
+   - Launches a test job with two tasks (one that fails and one that succeeds)
+   - Creates the necessary DynamoDB records
+   - Monitors the task status
+
+### Running Tests
+
+```bash
+# Run the test suite
+python tests/integration/run_tests.py
+
+# Run with custom parameters
+python tests/integration/run_tests.py \
+  --cluster your-cluster-name \
+  --task-table your-task-table \
+  --job-table your-job-table \
+  --node-table your-node-table
+
+# Only set up task definitions without running tests
+python tests/integration/run_tests.py --setup-only
+```
