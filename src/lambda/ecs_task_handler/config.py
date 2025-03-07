@@ -6,7 +6,6 @@ class Config:
 
     def __init__(self):
         """Initialize configuration from environment variables"""
-        logger.info("[CONFIG_INIT] Initializing configuration")
         self.task_table_name = os.environ.get('TASK_TABLE_NAME')
         self.job_table_name = os.environ.get('JOB_TABLE_NAME')
         self.node_table_name = os.environ.get('NODE_TABLE_NAME')
@@ -23,5 +22,3 @@ class Config:
 
         if missing:
             logger.error(f"[CONFIG_ERROR] Missing required environment variables: {', '.join(missing)}")
-        else:
-            logger.info("[CONFIG_COMPLETE] Configuration initialized successfully")

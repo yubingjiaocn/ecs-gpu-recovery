@@ -16,10 +16,8 @@ class ECSService:
         Args:
             cluster_name (str): ECS cluster name
         """
-        logger.info(f"[ECS_INIT] Initializing ECS service for cluster: {cluster_name}")
         self.cluster_name = cluster_name
         self.client = boto3.client('ecs')
-        logger.info("[ECS_INIT_COMPLETE] ECS service initialized")
 
     @error_handler
     def set_instance_status(self, container_instance_arn, status):

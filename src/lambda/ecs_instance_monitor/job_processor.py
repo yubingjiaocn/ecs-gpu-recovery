@@ -17,11 +17,9 @@ class JobProcessor:
             ecs_service (ECSService): ECS service instance
             notification_service (NotificationService): Notification service instance
         """
-        logger.info("[PROCESSOR_INIT] Initializing job processor")
         self.db_service = db_service
         self.ecs_service = ecs_service
         self.notification_service = notification_service
-        logger.info("[PROCESSOR_INIT_COMPLETE] Job processor initialized")
 
     def process_job(self, job_id, container_inst_id):
         """
@@ -46,18 +44,27 @@ class JobProcessor:
 
         logger.info(f"[JOB_STATUS] Job: {job_id}, status: {job_status}, retry: {retry}")
 
-        # Skip if job status is 'FAILED'
-        if job_status == 'FAILED':
-            logger.info(f"[JOB_SKIP] Job {job_id} status is 'FAILED', skipping")
+        # Skip if job status is not 'PENDING_RESTART'
+        if job_status != 'PENDING_RESTART':
+            logger.info(f"[JOB_SKIP] Job {job_id} status is '{job_status}', not 'PENDING_RESTART', skipping")
             return False
 
-        # Process based on retry count
-        if retry == 0:
-            logger.info(f"[JOB_RETRY_FIRST] Handling first retry for job {job_id}")
-            return self._handle_first_retry(job_id, container_inst_id)
-        else:
-            logger.info(f"[JOB_RETRY_SUBSEQUENT] Handling subsequent retry for job {job_id}")
-            return self._handle_subsequent_retry(job_id, container_inst_id)
+        # Check retry count
+        if retry >= 1:
+            logger.info(f"[JOB_RETRY_LIMIT] Job {job_id} retry count is {retry}, marking as FAILED")
+            self.db_service.update_job_status(job_id, 'FAILED')
+            return False
+
+        # Process job restart
+        logger.info(f"[JOB_RESTART] Restarting job {job_id}")
+        result = self._handle_first_retry(job_id, container_inst_id)
+
+        # Update job status to IN_PROGRESS if restart was successful
+        if result:
+            logger.info(f"[JOB_STATUS_UPDATE] Setting job {job_id} status to IN_PROGRESS")
+            self.db_service.update_job_status(job_id, 'IN_PROGRESS')
+
+        return result
 
     def _handle_first_retry(self, job_id, container_inst_id):
         """

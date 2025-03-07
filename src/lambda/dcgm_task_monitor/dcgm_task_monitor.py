@@ -346,8 +346,8 @@ def update_task_status(task_table, task_id: str, status: str) -> bool:
 
 def handle_exit_code_0(job_table, task_table, node_table, job_record: Dict[str, Any], task_records: List[Dict[str, Any]], cluster_arn: str) -> bool:
     """
-    Handles a task with exit code 0 (successful DCGM run but job failed).
-    Updates job status to FAILED and releases container instances.
+    Handles a task with exit code 0 (successful DCGM run).
+    Updates job status to PENDING_RESTART and releases container instances.
 
     Args:
         job_table: The job DynamoDB table
@@ -360,14 +360,14 @@ def handle_exit_code_0(job_table, task_table, node_table, job_record: Dict[str, 
     Returns:
         bool: True if successful, False otherwise
     """
-    logger.info("[HEALTH_CHECK_SUCCESS] DCGM task exit code 0, updating job status to FAILED")
+    logger.info("[HEALTH_CHECK_SUCCESS] DCGM task exit code 0, updating job status to PENDING_RESTART")
 
     try:
         job_id = job_record.get('job_id')
-        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as FAILED")
+        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as PENDING_RESTART")
 
         # Update job status
-        update_job_status(job_table, job_id, 'FAILED')
+        update_job_status(job_table, job_id, 'PENDING_RESTART')
 
         # Update all task statuses
         logger.info(f"[TASK_BATCH_UPDATE] Updating all tasks for job {job_id} to FAILED")
@@ -426,6 +426,10 @@ def handle_exit_code_1(job_table, task_table, node_table, detail: Dict[str, Any]
         retry = job_record.get('retry', 0)
         logger.info(f"[HEALTH_CHECK_ISSUE] DCGM task exit code 1 for job {job_id}, retry: {retry}")
 
+        # Update job status to FAILED
+        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as FAILED")
+        update_job_status(job_table, job_id, 'FAILED')
+
         if retry == 0:
             logger.info("[REBOOT_REQUIRED] Retry is 0, initiating instance reboot")
             container_instance_arn = detail['containerInstanceArn']
@@ -478,11 +482,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Returns:
         dict: Response with status code and message
     """
-    logger.info('[LAMBDA_START] DCGM Task Monitor invoked')
     logger.info(f'[EVENT_RECEIVED] Event: {json.dumps(event)}')
 
     # Get environment variables
-    logger.info("[CONFIG_INIT] Loading environment variables")
     task_table_name = os.environ.get('TASK_TABLE_NAME')
     job_table_name = os.environ.get('JOB_TABLE_NAME')
     node_table_name = os.environ.get('NODE_TABLE_NAME')
@@ -501,14 +503,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'body': error_msg
         }
 
-    logger.info("[CONFIG_COMPLETE] Environment variables loaded successfully")
-
     # Initialize DynamoDB tables
-    logger.info("[DB_INIT] Initializing DynamoDB tables")
     task_table = dynamodb.Table(task_table_name)
     job_table = dynamodb.Table(job_table_name)
     node_table = dynamodb.Table(node_table_name)
-    logger.info("[DB_INIT_COMPLETE] DynamoDB tables initialized")
 
     # Validate event
     if not is_valid_ecs_event(event):

@@ -209,7 +209,8 @@ class EcsGpuRecoveryStack(Stack):
                     }],
                     "clusterArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
-                    }]
+                    }],
+                    "lastStatus": ["STOPPED"]
                 }
             ),
             description="Rule to capture ECS task state change events (excluding DCGM tasks)"
@@ -235,7 +236,8 @@ class EcsGpuRecoveryStack(Stack):
                     }],
                     "clusterArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
-                    }]
+                    }],
+                    "lastStatus": ["STOPPED"]
                 }
             ),
             description="Rule to capture DCGM task state change events"
@@ -258,7 +260,8 @@ class EcsGpuRecoveryStack(Stack):
                 detail={
                     "clusterArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
-                    }]
+                    }],
+                    "status": ["ACTIVE"]
                 }
             ),
             description="Rule to capture ECS Container Instance State Change events"

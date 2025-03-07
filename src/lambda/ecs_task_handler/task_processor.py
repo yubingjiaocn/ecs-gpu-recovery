@@ -12,11 +12,9 @@ class TaskProcessor:
             ecs_service (ECSService): ECS service instance
             config (Config): Configuration
         """
-        logger.info("[PROCESSOR_INIT] Initializing task processor")
         self.db_service = db_service
         self.ecs_service = ecs_service
         self.config = config
-        logger.info("[PROCESSOR_INIT_COMPLETE] Task processor initialized")
 
     def process_task_state_change(self, detail):
         """
@@ -243,10 +241,10 @@ class TaskProcessor:
             if node_name:
                 self.db_service.update_node_status(node_name, 'PENDING_HEALTHCHECK')
 
-        # Update job status
+        # Update job status to PENDING_HEALTHCHECK
         if job_record:
-            logger.info(f"[JOB_STATE_CHANGE] Updating job {job_id} status to FAILED")
-            self.db_service.update_job_status(job_id, 'FAILED')
+            logger.info(f"[JOB_STATE_CHANGE] Updating job {job_id} status to PENDING_HEALTHCHECK")
+            self.db_service.update_job_status(job_id, 'PENDING_HEALTHCHECK')
 
         return True
 

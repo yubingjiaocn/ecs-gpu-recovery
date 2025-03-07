@@ -16,10 +16,8 @@ class NotificationService:
         Args:
             sns_topic_arn (str): SNS topic ARN
         """
-        logger.info(f"[NOTIFICATION_INIT] Initializing notification service with topic: {sns_topic_arn}")
         self.sns_topic_arn = sns_topic_arn
         self.client = boto3.client('sns')
-        logger.info("[NOTIFICATION_INIT_COMPLETE] Notification service initialized")
 
     @error_handler
     def send_notification(self, subject, message):

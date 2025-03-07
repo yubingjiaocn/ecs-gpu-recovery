@@ -20,12 +20,10 @@ class DynamoDBService:
             job_table_name (str): Job table name
             node_table_name (str): Node table name
         """
-        logger.info("[DB_INIT] Initializing DynamoDB service")
         self.dynamodb = boto3.resource('dynamodb')
         self.task_table = self.dynamodb.Table(task_table_name)
         self.job_table = self.dynamodb.Table(job_table_name)
         self.node_table = self.dynamodb.Table(node_table_name)
-        logger.info("[DB_INIT_COMPLETE] DynamoDB service initialized")
 
     @error_handler
     def get_tasks_by_container_instance_id(self, container_inst_id):
