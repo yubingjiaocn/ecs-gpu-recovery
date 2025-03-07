@@ -18,7 +18,7 @@ from typing import Dict, List, Tuple, Optional, Any
 # Import task definition creators
 from task_definitions import (
     create_failed_training_task_definition,
-    create_successful_training_task_definition
+    create_successful_training_task_definition,
     create_mock_dcgm_task_definition
 )
 

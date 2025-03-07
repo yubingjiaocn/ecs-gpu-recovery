@@ -236,6 +236,32 @@ class DynamoDBService:
         logger.info(f"[ATTRIBUTE_CHANGE_COMPLETE] Updated node {node_name} status to {status}")
         return True
 
+    @error_handler
+    def update_job_task_ids(self, job_id, task_ids):
+        """
+        Update submitted_ecs_task_ids for a job.
+
+        Args:
+            job_id (str): Job ID
+            task_ids (list): List of task IDs
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        import datetime
+
+        logger.info(f"[ATTRIBUTE_CHANGE] Updating job {job_id} submitted_ecs_task_ids to {task_ids}")
+        self.job_table.update_item(
+            Key={'job_id': job_id},
+            UpdateExpression='SET submittd_ecs_task_ids = :val, updated_at = :time',
+            ExpressionAttributeValues={
+                ':val': ','.join(task_ids) if isinstance(task_ids, list) else task_ids,
+                ':time': datetime.datetime.now().isoformat()
+            }
+        )
+        logger.info(f"[ATTRIBUTE_CHANGE_COMPLETE] Updated job {job_id} submitted_ecs_task_ids")
+        return True
+
 class ECSService:
     """Service for ECS operations"""
 
@@ -490,6 +516,29 @@ class TaskProcessor:
                 return container.get('exitCode')
         return None
 
+    def _extract_task_ids_from_job(self, job_record):
+        """
+        Extract task IDs from job record's submitted_ecs_task_ids field.
+
+        Args:
+            job_record (dict): Job record
+
+        Returns:
+            list: List of task IDs
+        """
+        if not job_record:
+            return []
+
+        submitted_ecs_task_ids = job_record.get('submittd_ecs_task_ids', '')
+        if isinstance(submitted_ecs_task_ids, str):
+            # If it's stored as a comma-separated string
+            return [task_id.strip() for task_id in submitted_ecs_task_ids.split(',') if task_id.strip()]
+        elif isinstance(submitted_ecs_task_ids, list):
+            # If it's stored as a list
+            return submitted_ecs_task_ids
+
+        return []
+
     def handle_user_stopped_task(self, task_id):
         """
         Handle task stopped by user.
@@ -507,15 +556,21 @@ class TaskProcessor:
             logger.warning(f"[TASK_STOP] No job found for task {task_id}")
             return False
 
-        # Update task status
-        self.db_service.update_task_status(task_id, 'USER_STOPPED')
+        # Update task status to TERMINATED
+        self.db_service.update_task_status(task_id, 'TERMINATED')
+
+        # Get all task IDs from job record
+        task_ids = self._extract_task_ids_from_job(job_record)
 
         # Check if all tasks for this job are stopped
         all_stopped = True
-        for task in task_records:
-            if task.get('ecs_task_id') != task_id and task.get('task_status') != 'USER_STOPPED':
-                all_stopped = False
-                break
+        for task_id_from_job in task_ids:
+            if task_id_from_job != task_id:
+                # Check if this task is still running
+                task_detail = self.ecs_service.describe_task(task_id_from_job)
+                if task_detail and task_detail.get('lastStatus') != 'STOPPED':
+                    all_stopped = False
+                    break
 
         # If all tasks are stopped, update job status
         if all_stopped and job_record:
@@ -541,15 +596,21 @@ class TaskProcessor:
             logger.warning(f"[TASK_COMPLETE] No job found for task {task_id}")
             return False
 
-        # Update task status
+        # Update task status to COMPLETE
         self.db_service.update_task_status(task_id, 'COMPLETE')
+
+        # Get all task IDs from job record
+        task_ids = self._extract_task_ids_from_job(job_record)
 
         # Check if all tasks for this job are complete
         all_complete = True
-        for task in task_records:
-            if task.get('ecs_task_id') != task_id and task.get('task_status') != 'COMPLETE':
-                all_complete = False
-                break
+        for task_id_from_job in task_ids:
+            if task_id_from_job != task_id:
+                # Check if this task is still running or not complete
+                task_detail = self.ecs_service.describe_task(task_id_from_job)
+                if task_detail and task_detail.get('lastStatus') != 'STOPPED':
+                    all_complete = False
+                    break
 
         # If all tasks are complete, update job status
         if all_complete and job_record:
@@ -577,18 +638,18 @@ class TaskProcessor:
             logger.warning(f"[TASK_FAILED] No job found for task {task_id}")
             return False
 
-        # Update task status
-        self.db_service.update_task_status(task_id, 'FAILED')
+        # Update task status to TERMINATED
+        self.db_service.update_task_status(task_id, 'TERMINATED')
 
-        # Get all task IDs for this job
-        task_ids = self._extract_task_ids(task_records)
+        # Get all task IDs from job record (authoritative source)
+        task_ids = self._extract_task_ids_from_job(job_record)
         logger.info(f"[TASK_BATCH] Found {len(task_ids)} tasks for job {job_id}")
 
         # Stop all tasks for this job
         logger.info(f"[TASK_BATCH_STOP] Stopping all tasks for job {job_id}")
         self.ecs_service.stop_tasks(task_ids)
 
-        # Set related instances to PENDING
+        # Set related instances to PENDING and mark tasks as TERMINATED
         logger.info(f"[INSTANCE_STATE_CHANGE] Setting related instances to PENDING for job {job_id}")
         self._set_related_instances_pending(task_records, task_detail, cluster_arn)
 
@@ -624,23 +685,6 @@ class TaskProcessor:
 
         return True
 
-    def _extract_task_ids(self, task_records):
-        """
-        Extract task IDs from task records.
-
-        Args:
-            task_records (list): List of task records
-
-        Returns:
-            list: List of task IDs
-        """
-        task_ids = []
-        for record in task_records:
-            task_id = record.get('ecs_task_id')
-            if task_id:
-                task_ids.append(task_id)
-        return task_ids
-
     def _set_related_instances_pending(self, task_records, task_detail, cluster_arn):
         """
         Set related instances to PENDING status.
@@ -659,6 +703,7 @@ class TaskProcessor:
         for record in task_records:
             container_instance_arn = record.get('container_instance_arn')
             node_name = record.get('node_name')
+            task_id = record.get('ecs_task_id')
 
             if container_instance_arn and container_instance_arn != current_instance_arn:
                 # Update ECS container instance status
@@ -673,6 +718,11 @@ class TaskProcessor:
                 if node_name:
                     logger.info(f"[NODE_STATE_CHANGE] Setting node {node_name} to PENDING")
                     self.db_service.update_node_status(node_name, 'PENDING')
+
+            # Mark task as TERMINATED
+            if task_id:
+                logger.info(f"[TASK_STATE_CHANGE] Setting task {task_id} to TERMINATED")
+                self.db_service.update_task_status(task_id, 'TERMINATED')
 
         return True
 

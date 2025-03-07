@@ -11,11 +11,15 @@ from aws_cdk import (
 )
 from constructs import Construct
 import os
+from ecs_gpu_recovery.config import Config
 
 class EcsGpuRecoveryStack(Stack):
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # Load configuration
+        config = Config.get_config()
 
         # Create DynamoDB table for task tracking (individual ECS tasks)
         task_table = dynamodb.Table(
@@ -25,7 +29,7 @@ class EcsGpuRecoveryStack(Stack):
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="ecs_task"
+            table_name=config["TASK_TABLE_NAME"]
         )
 
         # Create DynamoDB table for job tracking (collection of tasks)
@@ -36,7 +40,7 @@ class EcsGpuRecoveryStack(Stack):
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="ecs_job"
+            table_name=config["JOB_TABLE_NAME"]
         )
 
         # Create DynamoDB table for node information tracking
@@ -47,7 +51,7 @@ class EcsGpuRecoveryStack(Stack):
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            table_name="ecs_node"
+            table_name=config["NODE_TABLE_NAME"]
         )
 
         # Lambda function for ECS task handling
@@ -55,15 +59,15 @@ class EcsGpuRecoveryStack(Stack):
             self, "EcsTaskHandler",
             runtime=lambda_.Runtime.PYTHON_3_13,
             code=lambda_.Code.from_asset("src/lambda/ecs_task_handler"),
-            handler="ecs_task_handler.lambda_handler",
-            timeout=Duration.seconds(60),
-            memory_size=256,
+            handler="handler.lambda_handler",
+            timeout=Duration.seconds(config["LAMBDA_TIMEOUT_SECONDS"]),
+            memory_size=config["LAMBDA_MEMORY_SIZE"],
             environment={
                 "TASK_TABLE_NAME": task_table.table_name,
                 "JOB_TABLE_NAME": job_table.table_name,
                 "NODE_TABLE_NAME": node_table.table_name,
-                "ECS_CLUSTER_NAME": "nwcd-gpu-testing",
-                "DCGM_HEALTH_CHECK_TASK": "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:2"
+                "ECS_CLUSTER_NAME": config["ECS_CLUSTER_NAME"],
+                "DCGM_HEALTH_CHECK_TASK": config["DCGM_HEALTH_CHECK_TASK"]
             },
             description="Lambda function to manage ECS GPU training tasks"
         )
@@ -74,13 +78,13 @@ class EcsGpuRecoveryStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             code=lambda_.Code.from_asset("src/lambda/dcgm_task_monitor"),
             handler="dcgm_task_monitor.lambda_handler",
-            timeout=Duration.seconds(60),
-            memory_size=256,
+            timeout=Duration.seconds(config["LAMBDA_TIMEOUT_SECONDS"]),
+            memory_size=config["LAMBDA_MEMORY_SIZE"],
             environment={
                 "TASK_TABLE_NAME": task_table.table_name,
                 "JOB_TABLE_NAME": job_table.table_name,
                 "NODE_TABLE_NAME": node_table.table_name,
-                "ECS_CLUSTER_NAME": "nwcd-gpu-testing"
+                "ECS_CLUSTER_NAME": config["ECS_CLUSTER_NAME"]
             },
             description="Lambda function to monitor DCGM task completions and manage recovery actions"
         )
@@ -105,7 +109,9 @@ class EcsGpuRecoveryStack(Stack):
                     "ecs:ListTasks",
                     "ecs:StartTask",
                     "ecs:DescribeTaskDefinition",
-                    "ecs:TagResource"
+                    "ecs:TagResource",
+                    "ecs:PutAttributes",
+                    "ecs:GetAttributes"
                 ],
                 resources=["*"]
             )
@@ -127,7 +133,9 @@ class EcsGpuRecoveryStack(Stack):
                 actions=[
                     "ecs:DescribeTasks",
                     "ecs:DescribeContainerInstances",
-                    "ecs:ListTasks"
+                    "ecs:ListTasks",
+                    "ecs:PutAttributes",
+                    "ecs:GetAttributes"
                 ],
                 resources=["*"]
             )
@@ -145,8 +153,8 @@ class EcsGpuRecoveryStack(Stack):
         # Create SNS topic for notifications
         notification_topic = sns.Topic(
             self, "GpuTrainingNotificationTopic",
-            display_name="GPU Training Job Notifications",
-            topic_name="gpu-training-notifications"
+            display_name=config["SNS_TOPIC_DISPLAY_NAME"],
+            topic_name=config["SNS_TOPIC_NAME"]
         )
 
         # Lambda function for ECS Instance Monitor (Lambda 3)
@@ -155,13 +163,13 @@ class EcsGpuRecoveryStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             code=lambda_.Code.from_asset("src/lambda/ecs_instance_monitor"),
             handler="ecs_instance_monitor.lambda_handler",
-            timeout=Duration.seconds(60),
-            memory_size=256,
+            timeout=Duration.seconds(config["LAMBDA_TIMEOUT_SECONDS"]),
+            memory_size=config["LAMBDA_MEMORY_SIZE"],
             environment={
                 "TASK_TABLE_NAME": task_table.table_name,
                 "JOB_TABLE_NAME": job_table.table_name,
                 "NODE_TABLE_NAME": node_table.table_name,
-                "ECS_CLUSTER_NAME": "nwcd-gpu-testing",
+                "ECS_CLUSTER_NAME": config["ECS_CLUSTER_NAME"],
                 "SNS_TOPIC_ARN": notification_topic.topic_arn
             },
             description="Lambda function to monitor ECS instance restart events and handle training jobs"
@@ -181,7 +189,9 @@ class EcsGpuRecoveryStack(Stack):
                     "ecs:ListTasks",
                     "ecs:StartTask",
                     "ecs:DescribeTasks",
-                    "ecs:DescribeTaskDefinition"
+                    "ecs:DescribeTaskDefinition",
+                    "ecs:PutAttributes",
+                    "ecs:GetAttributes"
                 ],
                 resources=["*"]
             )
@@ -198,7 +208,7 @@ class EcsGpuRecoveryStack(Stack):
                         "anything-but": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/dcgm-*"
                     }],
                     "clusterArn": [{
-                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/nwcd-gpu-testing"
+                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
                     }]
                 }
             ),
@@ -224,7 +234,7 @@ class EcsGpuRecoveryStack(Stack):
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/gpu-dcgm-health-check"
                     }],
                     "clusterArn": [{
-                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/nwcd-gpu-testing"
+                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
                     }]
                 }
             ),
@@ -247,7 +257,7 @@ class EcsGpuRecoveryStack(Stack):
                 detail_type=["ECS Container Instance State Change"],
                 detail={
                     "clusterArn": [{
-                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/nwcd-gpu-testing"
+                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
                     }]
                 }
             ),
