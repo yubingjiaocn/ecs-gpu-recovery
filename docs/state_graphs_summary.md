@@ -4,6 +4,8 @@ This document provides a summary of the state transitions for the three main com
 
 ## Component Relationships
 
+The ECS GPU Recovery system tracks three main components that work together to enable GPU task recovery:
+
 ```mermaid
 flowchart TD
     Job[Job] --> Task1[Task 1]
@@ -15,9 +17,10 @@ flowchart TD
     JS1[IN_PROGRESS]
     JS2[PENDING_HEALTHCHECK]
     JS3[PENDING_RESTART]
-    JS4[COMPLETE]
-    JS5[FAILED]
-    JS6[USER_STOPPED]
+    JS4[RESTARTING]
+    JS5[COMPLETE]
+    JS6[FAILED]
+    JS7[USER_STOPPED]
     end
 
     subgraph "Task States"
@@ -31,7 +34,8 @@ flowchart TD
     NS2[IN_PROGRESS]
     NS3[PENDING]
     NS4[PENDING_HEALTHCHECK]
-    NS5[FAILED]
+    NS5[REBOOTING]
+    NS6[FAILED]
     end
 ```
 
@@ -47,20 +51,30 @@ The three components (Jobs, Tasks, and Nodes) interact with each other during th
 2. **DCGM Health Check Process**:
    - When DCGM health check starts:
      - Node transitions from `PENDING` to `PENDING_HEALTHCHECK`
-   - When DCGM health check completes:
-     - Job transitions from `PENDING_HEALTHCHECK` to `PENDING_RESTART` (if GPU issue detected)
-     - Node transitions from `PENDING_HEALTHCHECK` to `FAILED` (if GPU issue detected)
+   - When DCGM health check completes with GPU issue detected:
+     - Job transitions from `PENDING_HEALTHCHECK` to `PENDING_RESTART`
+     - Node transitions from `PENDING_HEALTHCHECK` to `REBOOTING`
+   - When DCGM health check completes with no GPU issue:
+     - Job transitions from `PENDING_HEALTHCHECK` to `FAILED`
+     - Node transitions from `PENDING_HEALTHCHECK` to `AVAILABLE`
 
 3. **Recovery Process**:
    - When node becomes available after reboot:
-     - Node transitions from `FAILED` to `AVAILABLE`
-     - Job transitions from `PENDING_RESTART` to `IN_PROGRESS`
+     - Node transitions from `REBOOTING` to `AVAILABLE`
+     - Job transitions from `PENDING_RESTART` to `RESTARTING`
+     - Job then transitions from `RESTARTING` to `IN_PROGRESS` when tasks restart
      - New tasks are created in `IN_PROGRESS` state
 
 4. **Successful Completion**:
    - When all tasks transition to `COMPLETE`:
      - Job transitions to `COMPLETE`
      - Nodes remain in `AVAILABLE` state
+
+5. **User Intervention**:
+   - When user stops tasks:
+     - Tasks transition to `TERMINATED`
+     - Job transitions to `USER_STOPPED`
+     - Nodes transition to `AVAILABLE`
 
 ## Recovery Workflow Sequence
 
@@ -92,19 +106,42 @@ sequenceDiagram
 
     Note over Job,Node: GPU Issue Detected
     Job->>Job: PENDING_RESTART
-    Node->>Node: FAILED
+    Node->>Node: REBOOTING
 
     Note over Job,Node: Instance Reboot
     Node->>Node: Reboot
     Node->>Node: AVAILABLE
 
     Note over Job,Node: Recovery
-    Job->>Job: IN_PROGRESS
+    Job->>Job: RESTARTING
     Job->>Task: Create new task
     Task->>Task: IN_PROGRESS
+    Job->>Job: IN_PROGRESS
     Task->>Node: Assign to node
     Node->>Node: IN_PROGRESS
 ```
+
+## Lambda Function Responsibilities
+
+Each Lambda function in the system is responsible for specific state transitions:
+
+1. **ECS Task Handler**:
+   - Detects task failures (exit code 1)
+   - Transitions job to `PENDING_HEALTHCHECK`
+   - Transitions node to `PENDING`
+   - Launches DCGM health check task
+
+2. **DCGM Task Monitor**:
+   - Analyzes health check results
+   - Transitions job to `PENDING_RESTART` or `FAILED`
+   - Transitions node to `REBOOTING` or `AVAILABLE`
+   - Initiates instance reboot if needed
+
+3. **ECS Instance Monitor**:
+   - Detects when instances return to service
+   - Transitions job from `PENDING_RESTART` to `RESTARTING` to `IN_PROGRESS`
+   - Transitions node from `REBOOTING` to `AVAILABLE`
+   - Creates new tasks to replace failed ones
 
 ## Key Points
 
