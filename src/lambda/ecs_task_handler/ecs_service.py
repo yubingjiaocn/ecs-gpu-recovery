@@ -102,6 +102,7 @@ class ECSService:
         response = self.client.start_task(
             cluster=cluster_arn,
             taskDefinition=dcgm_task_def,
+            startedBy='ecs-task-handler-lambda',
             containerInstances=[container_instance_arn],
             tags=[{
                 'key': 'job_id',

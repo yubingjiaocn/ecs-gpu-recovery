@@ -51,9 +51,13 @@ class JobProcessor:
 
         # Check retry count
         if retry >= 1:
-            logger.info(f"[JOB_RETRY_LIMIT] Job {job_id} retry count is {retry}, marking as FAILED")
-            self.db_service.update_job_status(job_id, 'FAILED')
+            logger.info(f"[JOB_RETRY_LIMIT] Job {job_id} retry count is {retry}.")
+            result = self._handle_subsequent_retry(job_id, container_inst_id)
             return False
+
+        # Update job status to RESTARTING to avoid duplicate restarting
+        logger.info(f"[JOB_STATUS_UPDATE] Setting job {job_id} status to RESTARTING")
+        self.db_service.update_job_status(job_id, 'RESTARTING')
 
         # Process job restart
         logger.info(f"[JOB_RESTART] Restarting job {job_id}")
@@ -175,6 +179,9 @@ class JobProcessor:
         """
         logger.info(f"[JOB_RETRY_SUBSEQUENT_START] Job {job_id} retry is not 0, updating all related tasks to 'FAILED'")
 
+        # Update job status to FAILED
+        self.db_service.update_job_status(job_id, 'FAILED')
+
         # Get job record to access submitted_ecs_task_ids
         job_record = self.db_service.get_job(job_id)
         if not job_record or 'submitted_ecs_task_ids' not in job_record:
@@ -221,9 +228,6 @@ class JobProcessor:
                     if node_name:
                         logger.info(f"[NODE_STATE_CHANGE] Setting node {node_name} to AVAILABLE")
                         self.db_service.update_node_status(node_name, 'AVAILABLE')
-
-        # Update job status to FAILED
-        self.db_service.update_job_status(job_id, 'FAILED')
 
         # Send notification to technical staff
         subject = f"Job {job_id} failed after instance restart"

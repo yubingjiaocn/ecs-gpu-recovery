@@ -205,7 +205,7 @@ class EcsGpuRecoveryStack(Stack):
                 detail_type=["ECS Task State Change"],
                 detail={
                     "taskDefinitionArn": [{
-                        "anything-but": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/dcgm-*"
+                        "anything-but": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/gpu-dcgm-health-check*"
                     }],
                     "clusterArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"

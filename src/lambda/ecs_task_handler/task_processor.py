@@ -136,9 +136,17 @@ class TaskProcessor:
                     break
 
         # If all tasks are stopped, update job status
-        if all_stopped and job_record:
+        if all_stopped and job_record and job_record.get('job_status') == 'IN_PROGRESS':
             logger.info(f"[JOB_STATE_CHANGE] All tasks for job {job_id} are stopped, updating job status")
             self.db_service.update_job_status(job_id, 'USER_STOPPED')
+
+            # Get task detail for the current task
+            task_detail = self.ecs_service.describe_task(task_id)
+            if task_detail:
+                # Set related instances to AVAILABLE
+                logger.info(f"[INSTANCE_STATE_CHANGE] Setting related instances to AVAILABLE for job {job_id}")
+                cluster_arn = task_detail.get('clusterArn')
+                self._set_related_instances_status(task_records, task_detail, cluster_arn, 'AVAILABLE', only_in_progress=True)
 
         return True
 
@@ -180,6 +188,14 @@ class TaskProcessor:
             logger.info(f"[JOB_STATE_CHANGE] All tasks for job {job_id} are complete, updating job status")
             self.db_service.update_job_status(job_id, 'COMPLETE')
 
+            # Get task detail for the current task
+            task_detail = self.ecs_service.describe_task(task_id)
+            if task_detail:
+                # Set related instances to AVAILABLE
+                logger.info(f"[INSTANCE_STATE_CHANGE] Setting related instances to AVAILABLE for job {job_id}")
+                cluster_arn = task_detail.get('clusterArn')
+                self._set_related_instances_status(task_records, task_detail, cluster_arn, 'AVAILABLE', only_in_progress=True)
+
         return True
 
     def handle_task_exit_code_1(self, task_id, cluster_arn, task_detail):
@@ -214,7 +230,7 @@ class TaskProcessor:
 
         # Set related instances to PENDING and mark tasks as TERMINATED
         logger.info(f"[INSTANCE_STATE_CHANGE] Setting related instances to PENDING for job {job_id}")
-        self._set_related_instances_pending(task_records, task_detail, cluster_arn)
+        self._set_related_instances_status(task_records, task_detail, cluster_arn, 'PENDING')
 
         # Get container instance ARNs
         container_instance_arns = self.ecs_service.get_container_instances_from_tasks(task_ids)
@@ -248,14 +264,16 @@ class TaskProcessor:
 
         return True
 
-    def _set_related_instances_pending(self, task_records, task_detail, cluster_arn):
+    def _set_related_instances_status(self, task_records, task_detail, cluster_arn, status, only_in_progress=False):
         """
-        Set related instances to PENDING status.
+        Set related instances to the specified status.
 
         Args:
             task_records (list): List of task records
             task_detail (dict): Task detail
             cluster_arn (str): Cluster ARN
+            status (str): Status to set (e.g., 'PENDING', 'AVAILABLE')
+            only_in_progress (bool): If True, only update instances in IN_PROGRESS state
 
         Returns:
             bool: True if successful
@@ -267,23 +285,32 @@ class TaskProcessor:
             container_instance_arn = record.get('container_instance_arn')
             node_name = record.get('node_name')
             task_id = record.get('ecs_task_id')
+            node_status = record.get('node_status')
 
-            if container_instance_arn and container_instance_arn != current_instance_arn:
+            # Skip if we're only updating IN_PROGRESS instances and this one isn't
+            if only_in_progress and node_status != 'IN_PROGRESS':
+                continue
+
+            # For PENDING status, skip the current instance
+            if status == 'PENDING' and container_instance_arn == current_instance_arn:
+                continue
+
+            if container_instance_arn:
                 # Update ECS container instance status
-                logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {container_instance_arn} to PENDING")
+                logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {container_instance_arn} to {status}")
                 self.ecs_service.set_instance_status(
                     container_instance_arn,
-                    'PENDING',
+                    status,
                     cluster_arn
                 )
 
                 # Update node status in DynamoDB
                 if node_name:
-                    logger.info(f"[NODE_STATE_CHANGE] Setting node {node_name} to PENDING")
-                    self.db_service.update_node_status(node_name, 'PENDING')
+                    logger.info(f"[NODE_STATE_CHANGE] Setting node {node_name} to {status}")
+                    self.db_service.update_node_status(node_name, status)
 
-            # Mark task as TERMINATED
-            if task_id:
+            # Mark task as TERMINATED if we're setting to PENDING
+            if status == 'PENDING' and task_id:
                 logger.info(f"[TASK_STATE_CHANGE] Setting task {task_id} to TERMINATED")
                 self.db_service.update_task_status(task_id, 'TERMINATED')
 

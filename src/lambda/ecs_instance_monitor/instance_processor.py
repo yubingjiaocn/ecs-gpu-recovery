@@ -32,9 +32,9 @@ def process_active_instance(instance_id, detail, config):
     notification_service = NotificationService(config.sns_topic_arn)
     job_processor = JobProcessor(db_service, ecs_service, notification_service)
 
-    # Set instance status to AVAILABLE
-    logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {detail['containerInstanceArn']} to AVAILABLE")
-    ecs_service.set_instance_status(detail['containerInstanceArn'], 'AVAILABLE')
+    # Set instance status to AVAILABLE (disable due to other function will set)
+    # logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {detail['containerInstanceArn']} to AVAILABLE")
+    # ecs_service.set_instance_status(detail['containerInstanceArn'], 'AVAILABLE')
 
     # Query tasks associated with this instance
     tasks = db_service.get_tasks_by_container_instance_id(instance_id)

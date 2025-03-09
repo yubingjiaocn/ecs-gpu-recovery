@@ -14,14 +14,14 @@ class Config:
 
     # ECS Configuration
     ECS_CLUSTER_NAME = "nwcd-gpu-testing"
-    DCGM_HEALTH_CHECK_TASK = "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:2"
+    DCGM_HEALTH_CHECK_TASK = "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:11"
 
     # SNS Configuration
     SNS_TOPIC_NAME = "gpu-training-notifications"
     SNS_TOPIC_DISPLAY_NAME = "GPU Training Job Notifications"
 
     # Lambda Configuration
-    LAMBDA_TIMEOUT_SECONDS = 60
+    LAMBDA_TIMEOUT_SECONDS = 300
     LAMBDA_MEMORY_SIZE = 256
 
     @classmethod

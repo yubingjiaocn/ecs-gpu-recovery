@@ -346,8 +346,8 @@ def update_task_status(task_table, task_id: str, status: str) -> bool:
 
 def handle_exit_code_0(job_table, task_table, node_table, job_record: Dict[str, Any], task_records: List[Dict[str, Any]], cluster_arn: str) -> bool:
     """
-    Handles a task with exit code 0 (successful DCGM run).
-    Updates job status to PENDING_RESTART and releases container instances.
+    Handles a task with exit code 0 (successful DCGM run, exit cause is in container).
+    Updates job status to FAILED and releases container instances.
 
     Args:
         job_table: The job DynamoDB table
@@ -360,14 +360,14 @@ def handle_exit_code_0(job_table, task_table, node_table, job_record: Dict[str, 
     Returns:
         bool: True if successful, False otherwise
     """
-    logger.info("[HEALTH_CHECK_SUCCESS] DCGM task exit code 0, updating job status to PENDING_RESTART")
+    logger.info("[HEALTH_CHECK_SUCCESS] DCGM task exit code 0, updating job status to FAILED")
 
     try:
         job_id = job_record.get('job_id')
-        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as PENDING_RESTART")
+        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as FAILED")
 
         # Update job status
-        update_job_status(job_table, job_id, 'PENDING_RESTART')
+        update_job_status(job_table, job_id, 'FAILED')
 
         # Update all task statuses
         logger.info(f"[TASK_BATCH_UPDATE] Updating all tasks for job {job_id} to FAILED")
@@ -405,7 +405,7 @@ def handle_exit_code_0(job_table, task_table, node_table, job_record: Dict[str, 
 
 def handle_exit_code_1(job_table, task_table, node_table, detail: Dict[str, Any], cluster_arn: str, job_record: Dict[str, Any], task_records: List[Dict[str, Any]]) -> bool:
     """
-    Handles a task with exit code 1 (DCGM detected an issue).
+    Handles a task with exit code 1 (DCGM detected an issue, exit cause is GPU fatal).
     May reboot the instance if retry count is 0.
 
     Args:
@@ -423,44 +423,39 @@ def handle_exit_code_1(job_table, task_table, node_table, detail: Dict[str, Any]
     try:
         # Check retry to determine if reboot is needed
         job_id = job_record.get('job_id')
-        retry = job_record.get('retry', 0)
-        logger.info(f"[HEALTH_CHECK_ISSUE] DCGM task exit code 1 for job {job_id}, retry: {retry}")
+        logger.info(f"[HEALTH_CHECK_ISSUE] DCGM task exit code 1 for job {job_id}")
 
-        # Update job status to FAILED
-        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as FAILED")
-        update_job_status(job_table, job_id, 'FAILED')
+        # Update job status to PENDING_RESTART
+        logger.info(f"[JOB_STATUS_UPDATE] Marking job {job_id} as PENDING_RESTART")
+        update_job_status(job_table, job_id, 'PENDING_RESTART')
 
-        if retry == 0:
-            logger.info("[REBOOT_REQUIRED] Retry is 0, initiating instance reboot")
-            container_instance_arn = detail['containerInstanceArn']
+        logger.info("[REBOOT_REQUIRED] Initiating instance reboot")
+        container_instance_arn = detail['containerInstanceArn']
 
-            # Get node name from task records
-            node_name = get_node_name_from_container_instance(task_records, container_instance_arn)
+        # Get node name from task records
+        node_name = get_node_name_from_container_instance(task_records, container_instance_arn)
 
-            # Get instance ID from container instance
-            instance_id = get_instance_id(cluster_arn, container_instance_arn)
-            if not instance_id:
-                logger.error("[REBOOT_ERROR] Failed to get container instance details")
-                return False
+        # Get instance ID from container instance
+        instance_id = get_instance_id(cluster_arn, container_instance_arn)
+        if not instance_id:
+            logger.error("[REBOOT_ERROR] Failed to get container instance details")
+            return False
 
-            # Mark instance as REBOOTING
-            logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {container_instance_arn} to REBOOTING")
-            update_container_instance_status(cluster_arn, container_instance_arn, 'REBOOTING')
+        # Mark instance as REBOOTING
+        logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {container_instance_arn} to REBOOTING")
+        update_container_instance_status(cluster_arn, container_instance_arn, 'REBOOTING')
 
-            # Update node status in DynamoDB
-            if node_name:
-                logger.info(f"[NODE_STATE_CHANGE] Setting node {node_name} to REBOOTING")
-                update_node_status(node_table, node_name, 'REBOOTING')
+        # Update node status in DynamoDB
+        if node_name:
+            logger.info(f"[NODE_STATE_CHANGE] Setting node {node_name} to REBOOTING")
+            update_node_status(node_table, node_name, 'REBOOTING')
 
-            # Send reboot command
-            if not reboot_instance(instance_id):
-                logger.error(f"[REBOOT_FAILED] Failed to reboot instance {instance_id}")
-                return False
+        # Send reboot command
+        if not reboot_instance(instance_id):
+            logger.error(f"[REBOOT_FAILED] Failed to reboot instance {instance_id}")
+            return False
 
-            logger.info(f"[REBOOT_INITIATED] Successfully initiated reboot for instance {instance_id}")
-        else:
-            logger.info(f"[REBOOT_SKIPPED] Retry count is {retry}, not rebooting instance")
-
+        logger.info(f"[REBOOT_INITIATED] Successfully initiated reboot for instance {instance_id}")
         logger.info("[HEALTH_CHECK_COMPLETE] Successfully handled exit code 1")
         return True
     except Exception as e:

@@ -62,24 +62,44 @@ class ECSService:
         tags = task_info.get('tags', [])
         overrides = task_info.get('overrides', {})
 
-        logger.info(f"[TASK_START_REQUEST] Starting task with definition {task_definition} on instance {container_instance_arn}")
+        # Add retry logic with backoff
+        max_retries = 3
+        retry_count = 0
+        backoff_time = 30  # Initial backoff time in seconds
 
-        # Run the task on the specified container instance
-        response = self.client.start_task(
-            cluster=self.cluster_name,
-            taskDefinition=task_definition,
-            startedBy='ecs-instance-monitor-lambda',
-            containerInstances=[container_instance_arn],
-            tags=tags,
-            overrides=overrides
-        )
+        while retry_count < max_retries:
+            logger.info(f"[TASK_START_REQUEST] Starting task with definition {task_definition} on instance {container_instance_arn} (Attempt {retry_count + 1}/{max_retries})")
 
-        if 'tasks' in response and response['tasks']:
-            task_arn = response['tasks'][0]['taskArn']
-            task_id = task_arn.split('/')[-1]
-            logger.info(f"[TASK_STARTED] Task {task_id} started on instance {container_instance_arn}")
-        else:
-            logger.warning(f"[TASK_START_FAILED] Failed to start task on instance {container_instance_arn}")
+            # Run the task on the specified container instance
+            response = self.client.start_task(
+                cluster=self.cluster_name,
+                taskDefinition=task_definition,
+                startedBy='ecs-instance-monitor-lambda',
+                containerInstances=[container_instance_arn],
+                tags=tags,
+                overrides=overrides
+            )
+
+            if 'tasks' in response and response['tasks']:
+                task_arn = response['tasks'][0]['taskArn']
+                task_id = task_arn.split('/')[-1]
+                logger.info(f"[TASK_STARTED] Task {task_id} started on instance {container_instance_arn}")
+                return response
+            else:
+                logger.error(f"[TASK_START_FAILED] Failed to start task on instance {container_instance_arn}")
+                logger.error(f"[TASK_START_FAILED_DETAILS] Response: {response}")
+                if 'failures' in response:
+                    for failure in response['failures']:
+                        logger.error(f"[TASK_START_FAILURE] Reason: {failure.get('reason', 'Unknown')}, ARN: {failure.get('arn', 'Unknown')}")
+
+                if retry_count < max_retries - 1:
+                    import time
+                    logger.info(f"[TASK_START_RETRY] Waiting {backoff_time} seconds before retry...")
+                    time.sleep(backoff_time)
+                    retry_count += 1
+                else:
+                    logger.error(f"[TASK_START_FAILED] Max retries ({max_retries}) reached. Giving up.")
+                    break
 
         return response
 

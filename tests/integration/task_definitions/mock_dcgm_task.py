@@ -16,7 +16,7 @@ def create_mock_dcgm_task_definition():
     # Check if task definition already exists
     try:
         response = ecs_client.describe_task_definition(
-            taskDefinition='mock-dcgm-health-check'
+            taskDefinition='gpu-dcgm-health-check'
         )
         print(f"Task definition already exists: {response['taskDefinition']['taskDefinitionArn']}")
         return response['taskDefinition']['taskDefinitionArn']
