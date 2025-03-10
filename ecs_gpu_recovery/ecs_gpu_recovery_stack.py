@@ -7,7 +7,10 @@ from aws_cdk import (
     aws_events as events,
     aws_events_targets as targets,
     aws_sns as sns,
-    aws_ecs as ecs
+    aws_ecs as ecs,
+    aws_ec2 as ec2,
+    aws_fsx as fsx,
+    CfnOutput
 )
 from constructs import Construct
 import os
@@ -205,7 +208,7 @@ class EcsGpuRecoveryStack(Stack):
                 detail_type=["ECS Task State Change"],
                 detail={
                     "taskDefinitionArn": [{
-                        "anything-but": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/gpu-dcgm-health-check*"
+                        "anything-but": config["DCGM_HEALTH_CHECK_TASK"]
                     }],
                     "clusterArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
@@ -232,7 +235,7 @@ class EcsGpuRecoveryStack(Stack):
                 detail_type=["ECS Task State Change"],
                 detail={
                     "taskDefinitionArn": [{
-                        "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:task-definition/gpu-dcgm-health-check"
+                        "prefix": config["DCGM_HEALTH_CHECK_TASK"]
                     }],
                     "clusterArn": [{
                         "prefix": f"arn:{Stack.of(self).partition}:ecs:{Stack.of(self).region}:{Stack.of(self).account}:cluster/{config['ECS_CLUSTER_NAME']}"
@@ -274,3 +277,203 @@ class EcsGpuRecoveryStack(Stack):
                 event=events.RuleTargetInput.from_event_path("$")
             )
         )
+
+        # Optional EC2 Instance
+        if config["CREATE_EC2_INSTANCE"]:
+            # Look up VPC if provided
+            if config["EC2_VPC_ID"]:
+                vpc = ec2.Vpc.from_lookup(self, "ImportedVpc", vpc_id=config["EC2_VPC_ID"])
+            else:
+                # Create a default VPC if none provided
+                vpc = ec2.Vpc(self, "DefaultVpc",
+                    nat_gateways=1,
+                    subnet_configuration=[
+                        ec2.SubnetConfiguration(
+                            name="public",
+                            subnet_type=ec2.SubnetType.PUBLIC,
+                            cidr_mask=24
+                        ),
+                        ec2.SubnetConfiguration(
+                            name="private",
+                            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
+                            cidr_mask=24
+                        )
+                    ]
+                )
+
+            # Look up subnet if provided, otherwise use the first public subnet
+            if config["EC2_SUBNET_ID"]:
+                subnet = ec2.Subnet.from_subnet_id(self, "ImportedSubnet", subnet_id=config["EC2_SUBNET_ID"])
+                subnet_selection = ec2.SubnetSelection(subnets=[subnet])
+            else:
+                subnet_selection = ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC)
+
+            # Create security group for EC2 instance
+            ec2_security_group = ec2.SecurityGroup(
+                self, "EC2SecurityGroup",
+                vpc=vpc,
+                description="Security group for GPU EC2 instance",
+                allow_all_outbound=True
+            )
+
+            # Allow SSH access
+            ec2_security_group.add_ingress_rule(
+                ec2.Peer.any_ipv4(),
+                ec2.Port.tcp(22),
+                "Allow SSH access from anywhere"
+            )
+
+            # Use specified AMI or get the latest Amazon Linux 2 AMI
+            if config["EC2_AMI_ID"]:
+                machine_image = ec2.MachineImage.generic_linux({
+                    self.region: config["EC2_AMI_ID"]
+                })
+            else:
+                machine_image = ec2.MachineImage.latest_amazon_linux2(
+                    cpu_type=ec2.AmazonLinuxCpuType.X86_64
+                )
+
+            # Create EC2 instance
+            ec2_instance = ec2.Instance(
+                self, "GpuInstance",
+                vpc=vpc,
+                instance_type=ec2.InstanceType(config["EC2_INSTANCE_TYPE"]),
+                machine_image=machine_image,
+                security_group=ec2_security_group,
+                vpc_subnets=subnet_selection,
+                key_name=config["EC2_SSH_KEY_NAME"] if config["EC2_SSH_KEY_NAME"] else None
+            )
+
+            # Output EC2 instance information
+            CfnOutput(
+                self, "EC2InstanceId",
+                value=ec2_instance.instance_id,
+                description="EC2 Instance ID"
+            )
+
+            CfnOutput(
+                self, "EC2PublicIP",
+                value=ec2_instance.instance_public_ip,
+                description="EC2 Instance Public IP"
+            )
+
+        # Optional FSx Lustre File System
+        if config["CREATE_FSX_LUSTRE"]:
+            # Use EC2 VPC if FSX VPC not specified
+            if config["FSX_VPC_ID"]:
+                fsx_vpc = ec2.Vpc.from_lookup(self, "FsxVpc", vpc_id=config["FSX_VPC_ID"])
+            elif config["CREATE_EC2_INSTANCE"] and config["EC2_VPC_ID"]:
+                fsx_vpc = ec2.Vpc.from_lookup(self, "SharedVpc", vpc_id=config["EC2_VPC_ID"])
+            elif config["CREATE_EC2_INSTANCE"]:
+                # Use the VPC created for EC2
+                fsx_vpc = vpc
+            else:
+                # Create a new VPC for FSx
+                fsx_vpc = ec2.Vpc(self, "FsxDefaultVpc",
+                    nat_gateways=1,
+                    subnet_configuration=[
+                        ec2.SubnetConfiguration(
+                            name="public",
+                            subnet_type=ec2.SubnetType.PUBLIC,
+                            cidr_mask=24
+                        ),
+                        ec2.SubnetConfiguration(
+                            name="private",
+                            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
+                            cidr_mask=24
+                        )
+                    ]
+                )
+
+            # Look up subnet if provided, otherwise use the first private subnet
+            if config["FSX_SUBNET_ID"]:
+                fsx_subnet = ec2.Subnet.from_subnet_id(self, "FsxImportedSubnet", subnet_id=config["FSX_SUBNET_ID"])
+                fsx_subnet_selection = ec2.SubnetSelection(subnets=[fsx_subnet])
+            elif config["CREATE_EC2_INSTANCE"] and config["EC2_SUBNET_ID"]:
+                fsx_subnet = ec2.Subnet.from_subnet_id(self, "SharedSubnet", subnet_id=config["EC2_SUBNET_ID"])
+                fsx_subnet_selection = ec2.SubnetSelection(subnets=[fsx_subnet])
+            else:
+                fsx_subnet_selection = ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+
+            # Create security group for FSx Lustre
+            fsx_security_group = ec2.SecurityGroup(
+                self, "FsxSecurityGroup",
+                vpc=fsx_vpc,
+                description="Security group for FSx Lustre file system",
+                allow_all_outbound=True
+            )
+
+            # Allow access from EC2 security group if EC2 instance is created
+            if config["CREATE_EC2_INSTANCE"]:
+                fsx_security_group.add_ingress_rule(
+                    ec2_security_group,
+                    ec2.Port.tcp(988),
+                    "Allow access from EC2 instance"
+                )
+                fsx_security_group.add_ingress_rule(
+                    ec2_security_group,
+                    ec2.Port.tcp(1021),
+                    "Allow access from EC2 instance"
+                )
+                fsx_security_group.add_ingress_rule(
+                    ec2_security_group,
+                    ec2.Port.tcp(1022),
+                    "Allow access from EC2 instance"
+                )
+                fsx_security_group.add_ingress_rule(
+                    ec2_security_group,
+                    ec2.Port.tcp(1023),
+                    "Allow access from EC2 instance"
+                )
+            else:
+                # Allow access from within the VPC
+                fsx_security_group.add_ingress_rule(
+                    ec2.Peer.ipv4(fsx_vpc.vpc_cidr_block),
+                    ec2.Port.tcp(988),
+                    "Allow access from within VPC"
+                )
+                fsx_security_group.add_ingress_rule(
+                    ec2.Peer.ipv4(fsx_vpc.vpc_cidr_block),
+                    ec2.Port.tcp(1021),
+                    "Allow access from within VPC"
+                )
+                fsx_security_group.add_ingress_rule(
+                    ec2.Peer.ipv4(fsx_vpc.vpc_cidr_block),
+                    ec2.Port.tcp(1022),
+                    "Allow access from within VPC"
+                )
+                fsx_security_group.add_ingress_rule(
+                    ec2.Peer.ipv4(fsx_vpc.vpc_cidr_block),
+                    ec2.Port.tcp(1023),
+                    "Allow access from within VPC"
+                )
+
+            # Create FSx Lustre file system
+            fsx_lustre = fsx.LustreFileSystem(
+                self, "FsxLustre",
+                vpc=fsx_vpc,
+                vpc_subnet=fsx_subnet_selection,
+                security_group=fsx_security_group,
+                storage_capacity_gib=config["FSX_STORAGE_CAPACITY_GB"],
+                deployment_type=fsx.LustreDeploymentType(config["FSX_DEPLOYMENT_TYPE"]),
+                per_unit_storage_throughput=config["FSX_PER_UNIT_STORAGE_THROUGHPUT"]
+            )
+
+            # Output FSx Lustre information
+            CfnOutput(
+                self, "FsxLustreFileSystemId",
+                value=fsx_lustre.file_system_id,
+                description="FSx Lustre File System ID"
+            )
+
+            CfnOutput(
+                self, "FsxLustreDnsName",
+                value=fsx_lustre.dns_name,
+                description="FSx Lustre DNS Name"
+            )
+
+            CfnOutput(
+                self, "FsxLustreMountName",
+                value=fsx_lustre.mount_name,
+                description="FSx Lustre Mount Name"
+            )

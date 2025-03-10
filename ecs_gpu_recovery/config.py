@@ -24,6 +24,22 @@ class Config:
     LAMBDA_TIMEOUT_SECONDS = 300
     LAMBDA_MEMORY_SIZE = 256
 
+    # EC2 Configuration
+    CREATE_EC2_INSTANCE = False
+    EC2_VPC_ID = ""
+    EC2_SUBNET_ID = ""
+    EC2_SSH_KEY_NAME = ""
+    EC2_INSTANCE_TYPE = "g4dn.xlarge"
+    EC2_AMI_ID = ""  # If empty, will use latest Amazon Linux 2 AMI
+
+    # FSx Lustre Configuration
+    CREATE_FSX_LUSTRE = False
+    FSX_VPC_ID = ""  # If empty, will use EC2_VPC_ID
+    FSX_SUBNET_ID = ""  # If empty, will use EC2_SUBNET_ID
+    FSX_STORAGE_CAPACITY_GB = 1200
+    FSX_DEPLOYMENT_TYPE = "SCRATCH_2"
+    FSX_PER_UNIT_STORAGE_THROUGHPUT = 125
+
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
         """
