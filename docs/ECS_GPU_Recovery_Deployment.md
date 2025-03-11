@@ -152,8 +152,8 @@ export ECS_CLUSTER_NAME="my-gpu-cluster"
 export DCGM_HEALTH_CHECK_TASK="arn:aws:ecs:region:account:task-definition/gpu-dcgm-health-check:1"
 
 # Set Lambda configuration
-export LAMBDA_TIMEOUT_SECONDS="120"
-export LAMBDA_MEMORY_SIZE="512"
+export LAMBDA_TIMEOUT_SECONDS=120
+export LAMBDA_MEMORY_SIZE=512
 
 # Set SNS configuration
 export SNS_TOPIC_NAME="my-gpu-notifications"

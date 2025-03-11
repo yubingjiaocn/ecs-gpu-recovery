@@ -63,8 +63,8 @@ class EcsGpuRecoveryStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             code=lambda_.Code.from_asset("src/lambda/ecs_task_handler"),
             handler="handler.lambda_handler",
-            timeout=Duration.seconds(config["LAMBDA_TIMEOUT_SECONDS"]),
-            memory_size=config["LAMBDA_MEMORY_SIZE"],
+            timeout=Duration.seconds(int(config["LAMBDA_TIMEOUT_SECONDS"])),
+            memory_size=int(config["LAMBDA_MEMORY_SIZE"]),
             environment={
                 "TASK_TABLE_NAME": task_table.table_name,
                 "JOB_TABLE_NAME": job_table.table_name,
@@ -81,8 +81,8 @@ class EcsGpuRecoveryStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             code=lambda_.Code.from_asset("src/lambda/dcgm_task_monitor"),
             handler="dcgm_task_monitor.lambda_handler",
-            timeout=Duration.seconds(config["LAMBDA_TIMEOUT_SECONDS"]),
-            memory_size=config["LAMBDA_MEMORY_SIZE"],
+            timeout=Duration.seconds(int(config["LAMBDA_TIMEOUT_SECONDS"])),
+            memory_size=int(config["LAMBDA_MEMORY_SIZE"]),
             environment={
                 "TASK_TABLE_NAME": task_table.table_name,
                 "JOB_TABLE_NAME": job_table.table_name,
@@ -166,8 +166,8 @@ class EcsGpuRecoveryStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             code=lambda_.Code.from_asset("src/lambda/ecs_instance_monitor"),
             handler="ecs_instance_monitor.lambda_handler",
-            timeout=Duration.seconds(config["LAMBDA_TIMEOUT_SECONDS"]),
-            memory_size=config["LAMBDA_MEMORY_SIZE"],
+            timeout=Duration.seconds(int(config["LAMBDA_TIMEOUT_SECONDS"])),
+            memory_size=int(config["LAMBDA_MEMORY_SIZE"]),
             environment={
                 "TASK_TABLE_NAME": task_table.table_name,
                 "JOB_TABLE_NAME": job_table.table_name,
