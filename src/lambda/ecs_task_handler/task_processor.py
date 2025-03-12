@@ -55,12 +55,12 @@ class TaskProcessor:
             exit_code = self._get_container_exit_code(task_detail)
             logger.info(f"[TASK_EXIT_CODE] Task {task_id} exit code: {exit_code}")
 
-            if exit_code == 0:
+            if exit_code == 1:
+                return self.handle_task_exit_code_1(task_id, cluster_arn, task_detail)
+            elif exit_code == 0:
                 return self.handle_task_exit_code_0(task_id)
             else:
-                return self.handle_task_exit_code_1(task_id, cluster_arn, task_detail)
-
-        return False
+                return self.handle_task_exit_code_other(task_id)
 
     def _get_container_exit_code(self, task_detail):
         """
@@ -252,7 +252,7 @@ class TaskProcessor:
 
     def handle_task_exit_code_1(self, task_id, cluster_arn, task_detail):
         """
-        Handle task with exit code other then 0 (error).
+        Handle task with exit code 1 (error).
 
         Args:
             task_id (str): ECS task ID
@@ -262,7 +262,7 @@ class TaskProcessor:
         Returns:
             bool: True if handled successfully, False otherwise
         """
-        logger.info(f"[TASK_FAILED] Task {task_id} exited with code other then 0")
+        logger.info(f"[TASK_FAILED] Task {task_id} exited with code 1")
 
         job_id, job_record, task_records = self._get_job_info(task_id, "TASK_FAILED")
         if not job_id:
@@ -308,6 +308,41 @@ class TaskProcessor:
         if job_record:
             logger.info(f"[JOB_STATE_CHANGE] Updating job {job_id} status to PENDING_HEALTHCHECK")
             self.db_service.update_job_status(job_id, 'PENDING_HEALTHCHECK')
+
+        return True
+
+    def handle_task_exit_code_other(self, task_id):
+        """
+        Handle task with exit code other then 0 and 1 (unknown).
+
+        Args:
+            task_id (str): ECS task ID
+
+        Returns:
+            bool: True if handled successfully, False otherwise
+        """
+        logger.info(f"[TASK_COMPLETE] Task {task_id} exited other then 0 and 1")
+
+        job_id, job_record, task_records = self._get_job_info(task_id, "TASK_FAILED")
+        if not job_id:
+            return False
+
+        # Update task status to TERMINATED
+        self.db_service.update_task_status(task_id, 'TERMINATED')
+
+        # Get all task IDs from job record (authoritative source)
+        task_ids = self._extract_task_ids_from_job(job_record)
+        logger.info(f"[TASK_BATCH] Found {len(task_ids)} tasks for job {job_id}")
+
+        # Stop all tasks for this job
+        logger.info(f"[TASK_BATCH_STOP] Stopping all tasks for job {job_id}")
+        self.ecs_service.stop_tasks(task_ids)
+
+        # Update job status and release node
+        if job_record:
+            return self._update_job_and_instances(
+                job_id, task_id, job_record, task_records, 'FAILED', 'AVAILABLE', False
+            )
 
         return True
 
