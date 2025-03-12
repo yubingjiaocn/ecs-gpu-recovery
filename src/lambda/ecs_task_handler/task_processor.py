@@ -55,13 +55,12 @@ class TaskProcessor:
             exit_code = self._get_container_exit_code(task_detail)
             logger.info(f"[TASK_EXIT_CODE] Task {task_id} exit code: {exit_code}")
 
-            if exit_code == 1:
-                return self.handle_task_exit_code_1(task_id, cluster_arn, task_detail)
-            elif exit_code == 0:
+            if exit_code == 0:
                 return self.handle_task_exit_code_0(task_id)
             else:
-                logger.info(f"[TASK_UNHANDLED_CODE] Unhandled exit code: {exit_code}, no action taken")
-                return False
+                return self.handle_task_exit_code_1(task_id, cluster_arn, task_detail)
+
+        return False
 
     def _get_container_exit_code(self, task_detail):
         """
@@ -253,7 +252,7 @@ class TaskProcessor:
 
     def handle_task_exit_code_1(self, task_id, cluster_arn, task_detail):
         """
-        Handle task with exit code 1 (error).
+        Handle task with exit code other then 0 (error).
 
         Args:
             task_id (str): ECS task ID
@@ -263,7 +262,7 @@ class TaskProcessor:
         Returns:
             bool: True if handled successfully, False otherwise
         """
-        logger.info(f"[TASK_FAILED] Task {task_id} exited with code 1")
+        logger.info(f"[TASK_FAILED] Task {task_id} exited with code other then 0")
 
         job_id, job_record, task_records = self._get_job_info(task_id, "TASK_FAILED")
         if not job_id:
