@@ -50,7 +50,8 @@ class TaskProcessor:
         if stop_code and stop_code.startswith('UserInitiated'):
             logger.info(f"[TASK_USER_STOPPED] Task {task_id} was stopped by user")
             return self.handle_user_stopped_task(task_id)
-        else:
+        elif stop_code and stop_code.startswith('EssentialContainerExited'):
+            logger.info(f"[TASK_EXITED] Task {task_id} was exited due to error.")
             # Get exit code from containers
             exit_code = self._get_container_exit_code(task_detail)
             logger.info(f"[TASK_EXIT_CODE] Task {task_id} exit code: {exit_code}")
@@ -61,6 +62,9 @@ class TaskProcessor:
                 return self.handle_task_exit_code_0(task_id)
             else:
                 return self.handle_task_exit_code_other(task_id)
+        else:
+            logger.info(f"[TASK_FAILED_TO_START] Task {task_id} falied to start due to healthcheck, ignored.")
+            return True
 
     def _get_container_exit_code(self, task_detail):
         """
