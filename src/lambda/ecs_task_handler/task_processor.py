@@ -345,7 +345,7 @@ class TaskProcessor:
         # Update job status and release node
         if job_record:
             return self._update_job_and_instances(
-                job_id, task_id, job_record, task_records, 'FAILED', 'AVAILABLE', False
+                job_id, task_id, job_record, task_records, 'FAILED_OTHERS', 'AVAILABLE', False
             )
 
         return True
