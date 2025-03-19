@@ -43,6 +43,18 @@ class TaskProcessor:
             logger.error(f"[TASK_DETAIL_ERROR] Could not get details for task {task_id}")
             return False
 
+        # Check if task has jobtype=training_job tag
+        task_tags = task_detail.get('tags', [])
+        has_training_job_tag = False
+        for tag in task_tags:
+            if tag.get('key') == 'jobtype' and tag.get('value') == 'training_job':
+                has_training_job_tag = True
+                break
+
+        if not has_training_job_tag:
+            logger.info(f"[TASK_TAG_CHECK] Task {task_id} is not a training job, skipping")
+            return False
+
         stop_code = task_detail.get('stopCode')
         logger.info(f"[TASK_STOP_CODE] Task {task_id} stop code: {stop_code}")
 
