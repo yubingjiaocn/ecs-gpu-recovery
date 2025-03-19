@@ -218,7 +218,7 @@ def update_container_instance_status(cluster_arn: str, container_instance_arn: s
                 {
                     'name': 'status',
                     'value': status,
-                    'target-type': 'container-instance',
+                    'targetType': 'container-instance',
                     'targetId': container_instance_arn
                 }
             ]

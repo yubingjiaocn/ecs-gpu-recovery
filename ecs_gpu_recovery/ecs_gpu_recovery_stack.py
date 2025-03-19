@@ -114,7 +114,8 @@ class EcsGpuRecoveryStack(Stack):
                     "ecs:DescribeTaskDefinition",
                     "ecs:TagResource",
                     "ecs:PutAttributes",
-                    "ecs:GetAttributes"
+                    "ecs:GetAttributes",
+                    "iam:PassRole"
                 ],
                 resources=["*"]
             )
@@ -138,7 +139,8 @@ class EcsGpuRecoveryStack(Stack):
                     "ecs:DescribeContainerInstances",
                     "ecs:ListTasks",
                     "ecs:PutAttributes",
-                    "ecs:GetAttributes"
+                    "ecs:GetAttributes",
+                    "iam:PassRole"
                 ],
                 resources=["*"]
             )
@@ -194,7 +196,8 @@ class EcsGpuRecoveryStack(Stack):
                     "ecs:DescribeTasks",
                     "ecs:DescribeTaskDefinition",
                     "ecs:PutAttributes",
-                    "ecs:GetAttributes"
+                    "ecs:GetAttributes",
+                    "iam:PassRole"
                 ],
                 resources=["*"]
             )
