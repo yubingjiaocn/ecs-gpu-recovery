@@ -128,12 +128,13 @@ class ECSService:
             task_id (str): Task ID
 
         Returns:
-            dict: Task information
+            dict: Task information including tags
         """
         logger.info(f"[TASK_DESCRIBE] Getting information for task {task_id}")
         response = self.client.describe_tasks(
             cluster=self.cluster_name,
-            tasks=[task_id]
+            tasks=[task_id],
+            include=['TAGS']  # Include tags in the response
         )
 
         if not response.get('tasks'):
@@ -162,7 +163,8 @@ class ECSService:
         # Use the first task ID to query
         tasks_response = self.client.describe_tasks(
             cluster=self.cluster_name,
-            tasks=[task_ids[0]]
+            tasks=[task_ids[0]],
+            include=['TAGS']  # Include tags in the response
         )
 
         container_instance_arns = []
