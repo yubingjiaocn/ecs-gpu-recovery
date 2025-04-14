@@ -32,9 +32,23 @@ def process_active_instance(instance_id, detail, config):
     notification_service = NotificationService(config.sns_topic_arn)
     job_processor = JobProcessor(db_service, ecs_service, notification_service)
 
-    # Set instance status to AVAILABLE (disable due to other function will set)
-    # logger.info(f"[INSTANCE_STATE_CHANGE] Setting instance {detail['containerInstanceArn']} to AVAILABLE")
-    # ecs_service.set_instance_status(detail['containerInstanceArn'], 'AVAILABLE')
+    # Check if the instance has attributes and get the current status
+    container_instance_arn = detail.get('containerInstanceArn')
+    if container_instance_arn:
+        # Get instance attributes to check current status
+        try:
+            attributes = ecs_service.get_container_instance_attributes(container_instance_arn)
+            if attributes:
+                current_status = attributes.get('status')
+
+                # If status is REBOOTING, change it to AVAILABLE
+                if current_status == 'REBOOTING':
+                    logger.info(f"[INSTANCE_STATE_CHANGE] Changing instance {container_instance_arn} status from REBOOTING to AVAILABLE")
+                    ecs_service.set_instance_status(container_instance_arn, 'AVAILABLE')
+                else:
+                    logger.info(f"[INSTANCE_STATE_INFO] Instance {container_instance_arn} status is {current_status}, no change needed")
+        except Exception as e:
+            logger.error(f"[INSTANCE_STATE_ERROR] Error checking/updating instance status: {str(e)}")
 
     # Query tasks associated with this instance
     tasks = db_service.get_tasks_by_container_instance_id(instance_id)

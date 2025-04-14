@@ -1,5 +1,6 @@
 import boto3
 import logging
+import os
 from utils import error_handler
 
 # Configure logging
@@ -62,10 +63,10 @@ class ECSService:
         tags = task_info.get('tags', [])
         overrides = task_info.get('overrides', {})
 
-        # Add retry logic with backoff
-        max_retries = 3
+        # Get retry configuration from environment variables with defaults
+        max_retries = int(os.environ.get('ECS_TASK_MAX_RETRIES', '3'))
         retry_count = 0
-        backoff_time = 30  # Initial backoff time in seconds
+        backoff_time = int(os.environ.get('ECS_TASK_BACKOFF_SECONDS', '30'))
 
         while retry_count < max_retries:
             logger.info(f"[TASK_START_REQUEST] Starting task with definition {task_definition} on instance {container_instance_arn} (Attempt {retry_count + 1}/{max_retries})")
@@ -126,3 +127,36 @@ class ECSService:
 
         logger.info(f"[TASK_DESCRIBE_SUCCESS] Retrieved information for task {task_id}")
         return response['tasks'][0]
+        
+    @error_handler
+    def get_container_instance_attributes(self, container_instance_arn):
+        """
+        Get attributes of a container instance.
+
+        Args:
+            container_instance_arn (str): Container instance ARN
+
+        Returns:
+            dict: Dictionary with instance attributes where key is attribute name and value is attribute value
+                  Returns None if instance not found
+        """
+        logger.info(f"[INSTANCE_DESCRIBE] Getting attributes for container instance {container_instance_arn}")
+        response = self.client.describe_container_instances(
+            cluster=self.cluster_name,
+            containerInstances=[container_instance_arn]
+        )
+
+        if not response.get('containerInstances'):
+            logger.warning(f"[INSTANCE_DESCRIBE_EMPTY] No instance found for ARN {container_instance_arn}")
+            return None
+
+        instance = response['containerInstances'][0]
+        attributes = {}
+        
+        # Extract attributes into a dictionary for easier access
+        for attr in instance.get('attributes', []):
+            if 'name' in attr and 'value' in attr:
+                attributes[attr['name']] = attr['value']
+                
+        logger.info(f"[INSTANCE_DESCRIBE_SUCCESS] Retrieved attributes for instance {container_instance_arn}")
+        return attributes

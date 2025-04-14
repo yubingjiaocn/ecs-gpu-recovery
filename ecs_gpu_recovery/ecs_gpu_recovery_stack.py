@@ -175,7 +175,9 @@ class EcsGpuRecoveryStack(Stack):
                 "JOB_TABLE_NAME": job_table.table_name,
                 "NODE_TABLE_NAME": node_table.table_name,
                 "ECS_CLUSTER_NAME": config["ECS_CLUSTER_NAME"],
-                "SNS_TOPIC_ARN": notification_topic.topic_arn
+                "SNS_TOPIC_ARN": notification_topic.topic_arn,
+                "ECS_TASK_MAX_RETRIES": str(config["ECS_TASK_MAX_RETRIES"]),
+                "ECS_TASK_BACKOFF_SECONDS": str(config["ECS_TASK_BACKOFF_SECONDS"])
             },
             description="Lambda function to monitor ECS instance restart events and handle training jobs"
         )

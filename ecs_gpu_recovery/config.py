@@ -16,6 +16,10 @@ class Config:
     ECS_CLUSTER_NAME = "nwcd-gpu-testing"
     DCGM_HEALTH_CHECK_TASK = "arn:aws:ecs:us-west-2:600413481647:task-definition/gpu-dcgm-health-check:11"
 
+    # ECS Task Retry Configuration
+    ECS_TASK_MAX_RETRIES = 10
+    ECS_TASK_BACKOFF_SECONDS = 60
+
     # SNS Configuration
     SNS_TOPIC_NAME = "gpu-training-notifications"
     SNS_TOPIC_DISPLAY_NAME = "GPU Training Job Notifications"
